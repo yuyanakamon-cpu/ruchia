@@ -42,44 +42,53 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 border border-slate-100">
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ background: '#1a1a1a' }}>
+      <div className="max-w-md w-full rounded-2xl p-8" style={{ background: '#232323', border: '1px solid #2a2a2a' }}>
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-slate-900">ルシア</h1>
-          <p className="text-slate-500 mt-2">社内スケジュール＆タスク管理</p>
+          <h1 style={{ fontWeight: 200, letterSpacing: '0.25em', textTransform: 'uppercase', color: '#f0f0f0', fontSize: '1.5rem', marginBottom: '0.5rem' }}>
+            RUCHIA
+          </h1>
+          <p style={{ color: '#888', fontSize: '0.875rem' }}>社内スケジュール＆タスク管理</p>
         </div>
-        <form onSubmit={handleLogin} className="space-y-6">
+        <form onSubmit={handleLogin} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">メールアドレス</label>
+            <label className="block text-sm font-medium mb-1.5" style={{ color: '#b8b8b8' }}>メールアドレス</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+              className="w-full px-4 py-3 rounded outline-none transition-colors"
+              style={{ background: '#232323', border: '1px solid #3a3a3a', color: '#f0f0f0' }}
+              onFocus={e => (e.target.style.borderColor = '#b87333')}
+              onBlur={e => (e.target.style.borderColor = '#3a3a3a')}
               placeholder="name@example.com"
               required
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">パスワード</label>
+            <label className="block text-sm font-medium mb-1.5" style={{ color: '#b8b8b8' }}>パスワード</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+              className="w-full px-4 py-3 rounded outline-none transition-colors"
+              style={{ background: '#232323', border: '1px solid #3a3a3a', color: '#f0f0f0' }}
+              onFocus={e => (e.target.style.borderColor = '#b87333')}
+              onBlur={e => (e.target.style.borderColor = '#3a3a3a')}
               placeholder="••••••••"
               required
             />
           </div>
           {errorMsg && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
+            <div className="text-sm px-4 py-3 rounded" style={{ background: 'rgba(204,102,102,0.15)', border: '1px solid rgba(204,102,102,0.3)', color: '#cc6666' }}>
               ❌ {errorMsg}
             </div>
           )}
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition shadow-md disabled:opacity-50"
+            className="w-full py-3 text-sm font-semibold uppercase tracking-[0.05em] transition-opacity disabled:opacity-50"
+            style={{ background: '#b87333', color: '#1a1a1a', borderRadius: '2px' }}
           >
             {loading ? 'ログイン中...' : 'ログインする'}
           </button>

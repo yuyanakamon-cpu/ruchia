@@ -8,7 +8,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="p-8 max-w-lg">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">設定</h2>
+      <h2 className="text-2xl mb-6" style={{ color: '#f0f0f0' }}>設定</h2>
       <SettingsForm profile={profile} />
     </div>
   )

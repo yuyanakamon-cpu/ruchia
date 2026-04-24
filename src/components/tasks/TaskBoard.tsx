@@ -21,7 +21,16 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { CheckSquare, Plus, Check, Pencil, Trash2 } from 'lucide-react'
-import type { Task, Profile } from '@/types'
+import ViewToggle, { type ViewMode } from '@/components/shared/ViewToggle'
+import ApprovalStatusBadge from '@/components/shared/ApprovalStatusBadge'
+import type { Task, Profile, TaskAssignee } from '@/types'
+import type { Group, GroupMember } from '@/types/group'
+import { createTask, updateTask, respondToTaskApproval } from '@/lib/actions/tasks'
+
+function toLocalDatetimeInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 const COLUMNS = [
   { key: 'todo', label: '未着手' },
@@ -36,22 +45,30 @@ type FormState = {
   title: string
   description: string
   assignee_id: string
+  assignee_ids: string[]
+  group_id: string
   due_date: string
   priority: string
 }
 
 const emptyForm: FormState = {
-  title: '', description: '', assignee_id: '', due_date: '', priority: 'medium',
+  title: '', description: '', assignee_id: '', assignee_ids: [], group_id: '', due_date: '', priority: 'medium',
 }
 
 export default function TaskBoard({
   initialTasks,
   members,
   currentUserId,
+  groups = [],
+  currentView = 'all' as ViewMode,
+  currentGroupId,
 }: {
   initialTasks: Task[]
   members: Pick<Profile, 'id' | 'display_name'>[]
   currentUserId: string
+  groups?: (Group & { members: GroupMember[] })[]
+  currentView?: ViewMode
+  currentGroupId?: string
 }) {
   const [tasks, setTasks] = useState(initialTasks)
   const [open, setOpen] = useState(false)
@@ -72,35 +89,50 @@ export default function TaskBoard({
       title: task.title,
       description: task.description ?? '',
       assignee_id: task.assignee_id ?? '',
-      due_date: task.due_date ? task.due_date.slice(0, 16) : '',
+      assignee_ids: getEffectiveTaskAssignees(task).map(a => a.user_id),
+      group_id: task.group_id ?? '',
+      due_date: task.due_date ? toLocalDatetimeInput(new Date(task.due_date)) : '',
       priority: task.priority,
     })
     setOpen(true)
   }
 
+  function toggleAssignee(userId: string) {
+    setForm(p => ({
+      ...p,
+      assignee_ids: p.assignee_ids.includes(userId)
+        ? p.assignee_ids.filter(id => id !== userId)
+        : [...p.assignee_ids, userId],
+    }))
+  }
+
   async function saveTask() {
     if (!form.title.trim()) return
-    const payload = {
+    const input = {
       title: form.title,
       description: form.description || null,
       assignee_id: form.assignee_id || null,
-      due_date: form.due_date || null,
+      assignee_ids: form.assignee_ids,
+      group_id: form.group_id || null,
+      due_date: form.due_date ? new Date(form.due_date).toISOString() : null,
       priority: form.priority,
     }
 
     if (editingId) {
-      const { error } = await supabase.from('tasks').update(payload).eq('id', editingId)
-      if (error) { toast.error('更新に失敗しました'); return }
-      setTasks(prev => prev.map(t => t.id === editingId ? { ...t, ...payload, priority: payload.priority as Task['priority'] } : t))
+      const result = await updateTask(editingId, input)
+      if ('error' in result) { toast.error('更新に失敗しました'); return }
+      setTasks(prev => prev.map(t => t.id === editingId ? {
+        ...t,
+        ...result.task,
+        priority: result.task.priority as Task['priority'],
+        approval_status: result.task.approval_status as Task['approval_status'],
+        assignees: result.task.assignees,
+      } : t))
       toast.success('タスクを更新しました')
     } else {
-      const { data, error } = await supabase
-        .from('tasks')
-        .insert({ ...payload, status: 'todo', created_by: currentUserId })
-        .select('*')
-        .single()
-      if (error) { toast.error('タスク作成に失敗しました'); return }
-      setTasks(prev => [data, ...prev])
+      const result = await createTask(input)
+      if ('error' in result) { toast.error('タスク作成に失敗しました'); return }
+      setTasks(prev => [result.task, ...prev])
       toast.success('タスクを作成しました')
     }
 
@@ -116,6 +148,19 @@ export default function TaskBoard({
     if (error) { toast.error('更新に失敗しました'); return }
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t))
     if (status === 'done') toast.success('タスクを完了しました！')
+  }
+
+  async function updateTaskApproval(taskId: string, approval_status: 'accepted' | 'rejected') {
+    const result = await respondToTaskApproval(taskId, approval_status)
+    if (result.error) { toast.error('更新に失敗しました'); return }
+    setTasks(prev => prev.map(t => t.id === taskId ? {
+      ...t,
+      assignees: t.assignees?.map(a =>
+        a.user_id === currentUserId ? { ...a, approval_status } : a
+      ),
+      ...(t.assigned_to === currentUserId ? { approval_status } : {}),
+    } : t))
+    toast.success(approval_status === 'accepted' ? 'タスクを受けました' : 'タスクを断りました')
   }
 
   async function deleteTask(taskId: string) {
@@ -134,6 +179,30 @@ export default function TaskBoard({
     return 'text-gray-400'
   }
 
+  // 互換: task_assignees が空なら legacy assigned_to から生成
+  function getEffectiveTaskAssignees(task: Task): TaskAssignee[] {
+    if (task.assignees && task.assignees.length > 0) return task.assignees
+    if (task.assigned_to && task.approval_status && task.approval_status !== 'none') {
+      return [{
+        id: '', task_id: task.id, user_id: task.assigned_to,
+        approval_status: task.approval_status as 'pending' | 'accepted' | 'rejected',
+        approval_updated_at: task.approval_updated_at,
+      }]
+    }
+    return []
+  }
+
+  function formatTaskAssigneeNames(task: Task): string {
+    const assignees = getEffectiveTaskAssignees(task)
+    if (assignees.length === 0) return ''
+    const names = assignees.map(a => {
+      const name = members.find(m => m.id === a.user_id)?.display_name ?? '名前未設定'
+      return a.user_id === currentUserId ? `${name}（自分）` : name
+    })
+    if (names.length <= 3) return names.join(', ')
+    return `${names.slice(0, 2).join(', ')} 他${names.length - 2}名`
+  }
+
   const assigneeName = (task: Task) =>
     members.find(m => m.id === task.assignee_id)?.display_name ?? null
 
@@ -142,10 +211,19 @@ export default function TaskBoard({
 
   const canDelete = (task: Task) => task.created_by === currentUserId
 
+  // Filter tasks by view
+  const visibleTasks = tasks.filter(task => {
+    if (currentView === 'personal') return !task.group_id
+    if (currentView === 'group') return currentGroupId ? task.group_id === currentGroupId : !!task.group_id
+    return true
+  })
+
   return (
     <div className="p-4 sm:p-8">
+      <ViewToggle groups={groups} currentView={currentView} currentGroupId={currentGroupId} />
+
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+        <h2 className="text-2xl flex items-center gap-2" style={{ color: '#f0f0f0' }}>
           <CheckSquare size={24} /> タスク
         </h2>
         <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setEditingId(null); setForm(emptyForm) } }}>
@@ -174,18 +252,48 @@ export default function TaskBoard({
                   rows={3}
                 />
               </div>
+              {groups.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label>グループ</Label>
+                  <Select
+                    value={form.group_id}
+                    onValueChange={v => setForm(p => ({ ...p, group_id: v === '__none__' ? '' : (v ?? '') }))}
+                    items={[
+                      { value: '__none__', label: '個人タスク' },
+                      ...groups.map(g => ({ value: g.id, label: g.name })),
+                    ]}
+                  >
+                    <SelectTrigger><SelectValue placeholder="個人タスク" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">個人タスク</SelectItem>
+                      {groups.map(g => (
+                        <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>担当者</Label>
                   <Select
                     value={form.assignee_id}
                     onValueChange={v => setForm(p => ({ ...p, assignee_id: v === '__none__' ? '' : (v ?? '') }))}
+                    items={[
+                      { value: '__none__', label: '未割当' },
+                      ...members.map(m => ({
+                        value: m.id,
+                        label: (m.display_name ?? '名前未設定') + (m.id === currentUserId ? '（自分）' : ''),
+                      })),
+                    ]}
                   >
                     <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">未割当</SelectItem>
                       {members.map(m => (
-                        <SelectItem key={m.id} value={m.id}>{m.display_name}</SelectItem>
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.display_name ?? '名前未設定'}{m.id === currentUserId ? '（自分）' : ''}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -195,6 +303,11 @@ export default function TaskBoard({
                   <Select
                     value={form.priority}
                     onValueChange={v => { if (v) setForm(p => ({ ...p, priority: v })) }}
+                    items={[
+                      { value: 'low', label: '低' },
+                      { value: 'medium', label: '中' },
+                      { value: 'high', label: '高' },
+                    ]}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -205,6 +318,50 @@ export default function TaskBoard({
                   </Select>
                 </div>
               </div>
+              {/* 承認担当者（複数選択可・グループ選択時はグループメンバーのみ、未選択時は全メンバー） */}
+              {(() => {
+                const candidateMembers = form.group_id
+                  ? (groups.find(g => g.id === form.group_id)?.members ?? []).map(m => ({
+                      id: m.user_id,
+                      display_name:
+                        m.profile?.display_name
+                        ?? members.find(p => p.id === m.user_id)?.display_name
+                        ?? '名前未設定',
+                    }))
+                  : members.map(m => ({ id: m.id, display_name: m.display_name ?? '名前未設定' }))
+                return candidateMembers.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <Label>承認担当者（複数選択可）</Label>
+                    <div className="rounded-lg p-1.5 space-y-0.5" style={{ background: '#2a2a2a', border: '1px solid #333' }}>
+                      {candidateMembers.map(m => {
+                        const checked = form.assignee_ids.includes(m.id)
+                        const isOther = m.id !== currentUserId
+                        return (
+                          <label key={m.id} className="flex items-center gap-2.5 cursor-pointer px-2.5 py-2 rounded transition-colors hover:bg-[#333]">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleAssignee(m.id)}
+                              className="rounded"
+                            />
+                            <span className="text-sm flex-1" style={{ color: '#f0f0f0' }}>
+                              {m.display_name}{m.id === currentUserId ? ' （自分）' : ''}
+                            </span>
+                            {checked && isOther && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(212,160,85,0.15)', color: '#d4a055' }}>
+                                承認依頼
+                              </span>
+                            )}
+                          </label>
+                        )
+                      })}
+                    </div>
+                    {form.assignee_ids.some(id => id !== currentUserId) && (
+                      <p className="text-xs" style={{ color: '#d4a055' }}>担当者に承認依頼が送られます</p>
+                    )}
+                  </div>
+                ) : null
+              })()}
               <div className="space-y-1.5">
                 <Label>期限</Label>
                 <Input
@@ -223,11 +380,11 @@ export default function TaskBoard({
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
         {COLUMNS.map(col => {
-          const colTasks = tasks.filter(t => t.status === col.key)
+          const colTasks = visibleTasks.filter(t => t.status === col.key)
           return (
             <div key={col.key}>
               <div className="flex items-center gap-2 mb-3">
-                <h3 className="font-semibold text-sm text-gray-700">{col.label}</h3>
+                <h3 className="font-semibold text-sm" style={{ color: '#b8b8b8' }}>{col.label}</h3>
                 <Badge variant="secondary" className="text-xs">{colTasks.length}</Badge>
               </div>
               <div className="space-y-2">
@@ -235,23 +392,30 @@ export default function TaskBoard({
                   <Card key={task.id} className="hover:shadow-sm transition-shadow">
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between gap-2 mb-1.5">
-                        <p className={`text-sm font-medium leading-snug ${task.status === 'done' ? 'line-through text-gray-400' : ''}`}>
+                        <p className="text-sm font-medium leading-snug" style={{ color: task.status === 'done' ? '#555' : '#f0f0f0', textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>
                           {task.title}
                         </p>
                         <div className="flex items-center gap-1 shrink-0">
                           <Badge variant={priorityColor[task.priority as keyof typeof priorityColor]} className="text-xs">
                             {priorityLabel[task.priority as keyof typeof priorityLabel]}
                           </Badge>
+                          {(() => {
+                            const myAssignee = getEffectiveTaskAssignees(task).find(a => a.user_id === currentUserId)
+                            return myAssignee ? <ApprovalStatusBadge status={myAssignee.approval_status} /> : null
+                          })()}
                         </div>
                       </div>
 
                       {task.description && (
-                        <p className="text-xs text-gray-500 mb-2 line-clamp-2">{task.description}</p>
+                        <p className="text-xs mb-2 line-clamp-2" style={{ color: '#888' }}>{task.description}</p>
                       )}
 
                       <div className="text-xs space-y-0.5 mb-3">
                         {assigneeName(task) && (
-                          <p className="text-gray-500">👤 {assigneeName(task)}</p>
+                          <p style={{ color: '#888' }}>👤 {assigneeName(task)}</p>
+                        )}
+                        {formatTaskAssigneeNames(task) && (
+                          <p style={{ color: '#888' }}>📋 {formatTaskAssigneeNames(task)}</p>
                         )}
                         {task.due_date && (
                           <p className={dueDateColor(task)}>
@@ -260,12 +424,35 @@ export default function TaskBoard({
                         )}
                       </div>
 
+                      {getEffectiveTaskAssignees(task).some(a => a.user_id === currentUserId && a.approval_status === 'pending') && (
+                        <div className="rounded-lg p-3 mb-3 space-y-2" style={{ background: 'rgba(212,160,85,0.08)', border: '1px solid rgba(212,160,85,0.2)' }}>
+                          <p className="text-xs font-medium" style={{ color: '#d4a055' }}>このタスクが担当に割り当てられました</p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => updateTaskApproval(task.id, 'accepted')}
+                              className="flex-1 text-xs py-1.5 rounded font-medium transition-opacity hover:opacity-80"
+                              style={{ background: '#b87333', color: '#1a1a1a' }}
+                            >
+                              受ける
+                            </button>
+                            <button
+                              onClick={() => updateTaskApproval(task.id, 'rejected')}
+                              className="flex-1 text-xs py-1.5 rounded font-medium transition-opacity hover:opacity-80"
+                              style={{ border: '1px solid #c66', color: '#c66', background: 'transparent' }}
+                            >
+                              受けない
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between">
                         <div className="flex gap-1">
                           {canEdit(task) && (
                             <button
                               onClick={() => openEdit(task)}
-                              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded transition-colors"
+                              style={{ color: '#555' }}
                             >
                               <Pencil size={13} />
                             </button>
@@ -273,7 +460,8 @@ export default function TaskBoard({
                           {canDelete(task) && (
                             <button
                               onClick={() => setDeleteTargetId(task.id)}
-                              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                              className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded transition-colors"
+                              style={{ color: '#555' }}
                             >
                               <Trash2 size={13} />
                             </button>
@@ -295,7 +483,7 @@ export default function TaskBoard({
                   </Card>
                 ))}
                 {colTasks.length === 0 && (
-                  <div className="border-2 border-dashed rounded-lg p-6 text-center text-xs text-gray-300">
+                  <div className="border-2 border-dashed rounded-lg p-6 text-center text-xs" style={{ borderColor: '#3a3a3a', color: '#3a3a3a' }}>
                     タスクなし
                   </div>
                 )}

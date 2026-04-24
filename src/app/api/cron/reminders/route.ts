@@ -1,115 +1,256 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { format, addMinutes } from 'date-fns'
+import { NextRequest, NextResponse } from 'next/server'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { sendTelegramMessage } from '@/lib/telegram'
 
-// Vercel Cron から呼び出される想定
-// vercel.json: { "crons": [{ "path": "/api/cron/reminders", "schedule": "* * * * *" }] }
+// Vercel Cron または pg_cron (pg_net) から呼び出される
+// 認証: Authorization: Bearer $CRON_SECRET
 
-export async function GET(req: Request) {
-  // 本番では Vercel Cron の認証ヘッダーを検証する
-  const authHeader = req.headers.get('authorization')
-  if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+type AdminClient = ReturnType<typeof createAdminClient>
+
+type ReminderStats = {
+  sent: number
+  already_sent: number
+  pref_off: number
+  no_chat_id: number
+  errors: number
+  last_error?: string
+}
+
+// ─────────────────────────────────────────────
+// メインハンドラ
+// ─────────────────────────────────────────────
+
+export async function POST(request: NextRequest) {
+  const authHeader = request.headers.get('authorization')
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const supabase = await createClient()
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN not set' }, { status: 500 })
-
+  const admin = createAdminClient()
   const now = new Date()
-  const results = { events: 0, tasks: 0, errors: 0 }
+  const stats: ReminderStats = { sent: 0, already_sent: 0, pref_off: 0, no_chat_id: 0, errors: 0 }
 
-  // ── 予定リマインダー ───────────────────────────────────────────────────────
-  // notify_minutes_before 分後に開始する予定を持つ参加者に通知
-  // プロファイルごとに minutes_before が異なるため、15〜60分の窓を取得して絞る
-  const windowStart = addMinutes(now, 5)
-  const windowEnd = addMinutes(now, 65)
-
-  const { data: upcomingEvents } = await supabase
-    .from('events')
-    .select('id, title, start_at, location, attendees:event_attendees(user_id)')
-    .gte('start_at', windowStart.toISOString())
-    .lte('start_at', windowEnd.toISOString())
-
-  if (upcomingEvents) {
-    for (const event of upcomingEvents) {
-      const attendeeIds = (event.attendees as { user_id: string }[]).map(a => a.user_id)
-      if (attendeeIds.length === 0) continue
-
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, telegram_chat_id, notify_events_enabled, notify_minutes_before')
-        .in('id', attendeeIds)
-        .eq('notify_events_enabled', true)
-        .not('telegram_chat_id', 'is', null)
-
-      if (!profiles) continue
-
-      for (const profile of profiles) {
-        const targetTime = addMinutes(now, profile.notify_minutes_before)
-        const eventTime = new Date(event.start_at)
-        const diff = Math.abs(eventTime.getTime() - targetTime.getTime())
-        if (diff > 60 * 1000) continue // 1分以上ずれていればスキップ
-
-        const timeStr = format(eventTime, 'HH:mm')
-        const locationStr = event.location ? `\n📍 ${event.location}` : ''
-        const text = `⏰ 予定リマインダー\n「${event.title}」まで${profile.notify_minutes_before}分です。\n🕐 ${timeStr}${locationStr}`
-
-        const res = await sendTelegramMessage(token, profile.telegram_chat_id!, text)
-        if (res.ok) { results.events++ } else { results.errors++ }
-      }
-    }
+  try {
+    await processEventReminders(admin, now, stats)
+    await processTaskReminders(admin, now, stats)
+    return NextResponse.json({ success: true, processedAt: now.toISOString(), stats })
+  } catch (error) {
+    console.error('[Reminders] Fatal error:', error)
+    return NextResponse.json({ error: String(error) }, { status: 500 })
   }
-
-  // ── タスク期限リマインダー（当日のタスクを朝に通知）────────────────────
-  const todayStr = format(now, 'yyyy-MM-dd')
-  // 朝8時〜8時1分の間のみ実行（1分の cron なら1回のみ通知）
-  const isTaskNotifyWindow = now.getHours() === 8 && now.getMinutes() < 2
-
-  if (isTaskNotifyWindow) {
-    const { data: todayTasks } = await supabase
-      .from('tasks')
-      .select('id, title, due_date, assignee_id, priority')
-      .gte('due_date', `${todayStr}T00:00:00`)
-      .lt('due_date', `${todayStr}T23:59:59`)
-      .neq('status', 'done')
-      .not('assignee_id', 'is', null)
-
-    if (todayTasks) {
-      // 担当者ごとにまとめて送信
-      const tasksByUser = new Map<string, typeof todayTasks>()
-      for (const task of todayTasks) {
-        if (!task.assignee_id) continue
-        if (!tasksByUser.has(task.assignee_id)) tasksByUser.set(task.assignee_id, [])
-        tasksByUser.get(task.assignee_id)!.push(task)
-      }
-
-      for (const [userId, userTasks] of tasksByUser) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('telegram_chat_id, notify_tasks_enabled')
-          .eq('id', userId)
-          .single()
-
-        if (!profile?.telegram_chat_id || !profile.notify_tasks_enabled) continue
-
-        const taskLines = userTasks.map(t => `• ${t.title}`).join('\n')
-        const text = `📋 本日期限のタスク（${userTasks.length}件）\n${taskLines}`
-
-        const res = await sendTelegramMessage(token, profile.telegram_chat_id, text)
-        if (res.ok) { results.tasks++ } else { results.errors++ }
-      }
-    }
-  }
-
-  return NextResponse.json({ ok: true, ...results })
 }
 
-async function sendTelegramMessage(token: string, chatId: string, text: string) {
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
-  })
-  return res.json() as Promise<{ ok: boolean; description?: string }>
+// ─────────────────────────────────────────────
+// 予定リマインダー
+// ─────────────────────────────────────────────
+
+async function processEventReminders(admin: AdminClient, now: Date, stats: ReminderStats) {
+  // ① 1日前（24時間前 ±5分の窓）
+  const oneDayFrom = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  const { data: events1d } = await admin
+    .from('events')
+    .select('id, title, start_at, created_by, assignees:event_assignees(user_id)')
+    .gte('start_at', new Date(oneDayFrom.getTime() - 5 * 60 * 1000).toISOString())
+    .lte('start_at', new Date(oneDayFrom.getTime() + 5 * 60 * 1000).toISOString())
+
+  for (const event of events1d ?? []) {
+    const userIds = collectEventUserIds(event)
+    const profileMap = await fetchProfileMap(admin, userIds)
+    const msg = `🗓️ 明日の予定: ${event.title}\n開始: ${formatJaDatetime(event.start_at)}`
+    for (const uid of userIds) {
+      await sendReminderIfNotSent(admin, uid, event.id, 'event', '1day_before', msg, 'event_reminder', profileMap, stats)
+    }
+  }
+
+  // ② 1時間前（60分前 ±5分の窓）
+  const oneHourFrom = new Date(now.getTime() + 60 * 60 * 1000)
+  const { data: events1h } = await admin
+    .from('events')
+    .select('id, title, start_at, created_by, assignees:event_assignees(user_id)')
+    .gte('start_at', new Date(oneHourFrom.getTime() - 5 * 60 * 1000).toISOString())
+    .lte('start_at', new Date(oneHourFrom.getTime() + 5 * 60 * 1000).toISOString())
+
+  for (const event of events1h ?? []) {
+    const userIds = collectEventUserIds(event)
+    const profileMap = await fetchProfileMap(admin, userIds)
+    const msg = `⏰ 1時間後に予定があります\n${event.title}`
+    for (const uid of userIds) {
+      await sendReminderIfNotSent(admin, uid, event.id, 'event', '1hour_before', msg, 'event_reminder', profileMap, stats)
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// タスクリマインダー
+//   ① 期限1時間前: 常時実行（5分ごとのcronで拾う）
+//   ② 朝9時通知: JST 09:00〜09:04 のみ実行
+// ─────────────────────────────────────────────
+
+async function processTaskReminders(admin: AdminClient, now: Date, stats: ReminderStats) {
+  // ① 期限1時間前リマインダー（常時実行）
+  const oneHourFrom = new Date(now.getTime() + 60 * 60 * 1000)
+  const { data: tasks1h } = await admin
+    .from('tasks')
+    .select('id, title, due_date, created_by, assignees:task_assignees(user_id)')
+    .gte('due_date', new Date(oneHourFrom.getTime() - 5 * 60 * 1000).toISOString())
+    .lte('due_date', new Date(oneHourFrom.getTime() + 5 * 60 * 1000).toISOString())
+    .neq('status', 'done')
+
+  for (const task of tasks1h ?? []) {
+    const userIds = collectTaskUserIds(task)
+    const profileMap = await fetchProfileMap(admin, userIds)
+    const msg = `⏰ 1時間後期限: ${task.title}`
+    for (const uid of userIds) {
+      await sendReminderIfNotSent(admin, uid, task.id, 'task', '1hour_before_task', msg, 'task_reminder', profileMap, stats)
+    }
+  }
+
+  // ② 朝9時リマインダー（JST 09:00〜09:04 のみ）
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
+  if (jst.getUTCHours() !== 9 || jst.getUTCMinutes() >= 5) return
+
+  // JST の 1日の境界を UTC で計算する（JST midnight = UTC 前日 15:00）
+  const jstMidnightUTC = new Date(
+    Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate()) - 9 * 60 * 60 * 1000
+  )
+  const morningRanges = [
+    {
+      start: new Date(jstMidnightUTC.getTime() + 24 * 60 * 60 * 1000),
+      end:   new Date(jstMidnightUTC.getTime() + 48 * 60 * 60 * 1000),
+      reminderType: 'morning_1day' as const,
+      icon: '✅', label: '明日期限',
+    },
+    {
+      start: jstMidnightUTC,
+      end:   new Date(jstMidnightUTC.getTime() + 24 * 60 * 60 * 1000),
+      reminderType: 'morning_today' as const,
+      icon: '🔥', label: '今日期限',
+    },
+  ]
+
+  for (const { start, end, reminderType, icon, label } of morningRanges) {
+    const { data: tasks } = await admin
+      .from('tasks')
+      .select('id, title, due_date, created_by, assignees:task_assignees(user_id)')
+      .gte('due_date', start.toISOString())
+      .lt('due_date', end.toISOString())
+      .neq('status', 'done')
+
+    for (const task of tasks ?? []) {
+      const userIds = collectTaskUserIds(task)
+      const profileMap = await fetchProfileMap(admin, userIds)
+      const msg = `${icon} ${label}: ${task.title}`
+      for (const uid of userIds) {
+        await sendReminderIfNotSent(admin, uid, task.id, 'task', reminderType, msg, 'task_reminder', profileMap, stats)
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// 重複防止つき通知送信
+// ─────────────────────────────────────────────
+
+type ProfileMap = Map<string, { telegram_chat_id: string; notification_preferences: Record<string, boolean> | null }>
+
+async function sendReminderIfNotSent(
+  admin: AdminClient,
+  userId: string,
+  targetId: string,
+  targetType: 'event' | 'task',
+  reminderType: string,
+  message: string,
+  notificationType: 'event_reminder' | 'task_reminder',
+  profileMap: ProfileMap,
+  stats: ReminderStats,
+): Promise<void> {
+  const profile = profileMap.get(userId)
+  if (!profile?.telegram_chat_id) {
+    stats.no_chat_id++
+    return
+  }
+
+  const prefs = profile.notification_preferences ?? {}
+  if (prefs[notificationType] === false) {
+    stats.pref_off++
+    return
+  }
+
+  // 送信済み確認
+  const { data: existing } = await admin
+    .from('notifications_sent')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('target_id', targetId)
+    .eq('target_type', targetType)
+    .eq('reminder_type', reminderType)
+    .maybeSingle()
+
+  if (existing) {
+    stats.already_sent++
+    return
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[Reminder] ${reminderType} → ${userId}: ${message.slice(0, 40)}...`)
+  }
+
+  const result = await sendTelegramMessage(profile.telegram_chat_id, message)
+
+  if (result.ok) {
+    await admin.from('notifications_sent').insert({
+      user_id: userId,
+      target_id: targetId,
+      target_type: targetType,
+      reminder_type: reminderType,
+    })
+    stats.sent++
+  } else {
+    console.error(`[Reminder] Send failed for ${userId}: ${result.error}`)
+    stats.errors++
+    stats.last_error = result.error
+  }
+}
+
+// ─────────────────────────────────────────────
+// ヘルパー
+// ─────────────────────────────────────────────
+
+function collectEventUserIds(event: { created_by: string | null; assignees?: { user_id: string }[] | null }): string[] {
+  const ids = new Set<string>()
+  if (event.created_by) ids.add(event.created_by)
+  event.assignees?.forEach(a => ids.add(a.user_id))
+  return [...ids]
+}
+
+function collectTaskUserIds(task: { created_by: string | null; assignees?: { user_id: string }[] | null }): string[] {
+  const ids = new Set<string>()
+  if (task.created_by) ids.add(task.created_by)
+  task.assignees?.forEach(a => ids.add(a.user_id))
+  return [...ids]
+}
+
+async function fetchProfileMap(admin: AdminClient, userIds: string[]): Promise<ProfileMap> {
+  if (userIds.length === 0) return new Map()
+  const { data } = await admin
+    .from('profiles')
+    .select('id, telegram_chat_id, notification_preferences')
+    .in('id', userIds)
+    .not('telegram_chat_id', 'is', null)
+  const map: ProfileMap = new Map()
+  for (const p of data ?? []) {
+    if (p.telegram_chat_id) {
+      map.set(p.id, {
+        telegram_chat_id: p.telegram_chat_id,
+        notification_preferences: p.notification_preferences as Record<string, boolean> | null,
+      })
+    }
+  }
+  return map
+}
+
+function formatJaDatetime(isoString: string): string {
+  const d = new Date(isoString)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }

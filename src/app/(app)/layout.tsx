@@ -16,11 +16,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .single()
 
   return (
-    <div className="flex h-screen bg-slate-50">
+    <div className="flex h-screen" style={{ background: '#1a1a1a' }}>
       <Sidebar profile={profile} userEmail={user.email ?? ''} />
       <div className="flex flex-col flex-1 min-w-0">
         <MobileNav profile={profile} userEmail={user.email ?? ''} />
-        <main className="flex-1 overflow-auto bg-slate-50">
+        <main className="flex-1 overflow-auto" style={{ background: '#1a1a1a' }}>
           {children}
         </main>
       </div>
