@@ -104,6 +104,69 @@ const statusLabel = { pending: '未回答', accepted: '参加', declined: '不�
 const DAY_HEADERS = ['月', '火', '水', '木', '金', '土', '日']
 const MAX_VISIBLE = 5
 
+// ─── Multi-day bar constants ──────────────────────────────────────────────────
+const BAR_HEIGHT     = 15   // px: actual bar height
+const BAR_ROW_HEIGHT = 18   // px: bar + gap between rows
+const BAR_TOP_OFFSET = 26   // px: distance from top of week row (below date number)
+const MAX_BAR_SLOTS  = 3    // max visible bar rows per week
+
+type MultiDaySegment = {
+  event: Event
+  startCol: number      // 0-6 (Mon-Sun)
+  endCol: number
+  isActualStart: boolean
+  isActualEnd: boolean
+  slot: number
+}
+
+function getMultiDaySegments(week: (Date | null)[], events: Event[]): MultiDaySegment[] {
+  const validDays = week
+    .map((d, i) => (d ? { day: d, col: i } : null))
+    .filter((x): x is { day: Date; col: number } => x !== null)
+  if (validDays.length === 0) return []
+
+  const weekFirst = format(validDays[0].day, 'yyyy-MM-dd')
+  const weekLast  = format(validDays[validDays.length - 1].day, 'yyyy-MM-dd')
+
+  const multiDay = events
+    .filter(e => {
+      const s = format(parseISO(e.start_at), 'yyyy-MM-dd')
+      const end = format(parseISO(e.end_at),   'yyyy-MM-dd')
+      return s !== end && s <= weekLast && end >= weekFirst
+    })
+    .sort((a, b) => a.start_at.localeCompare(b.start_at))
+
+  if (multiDay.length === 0) return []
+
+  const slotEnds: string[] = []
+
+  return multiDay.map(e => {
+    const eStart = format(parseISO(e.start_at), 'yyyy-MM-dd')
+    const eEnd   = format(parseISO(e.end_at),   'yyyy-MM-dd')
+
+    const segStart = eStart < weekFirst ? weekFirst : eStart
+    const segEnd   = eEnd   > weekLast  ? weekLast  : eEnd
+
+    const startCol = validDays.find(x => format(x.day, 'yyyy-MM-dd') === segStart)?.col
+      ?? validDays[0].col
+    const endCol   = validDays.find(x => format(x.day, 'yyyy-MM-dd') === segEnd)?.col
+      ?? validDays[validDays.length - 1].col
+
+    let slot = slotEnds.findIndex(end => end < segStart)
+    if (slot === -1) { slot = slotEnds.length; slotEnds.push(segEnd) }
+    else slotEnds[slot] = segEnd
+
+    return {
+      event: e,
+      startCol,
+      endCol,
+      isActualStart: eStart >= weekFirst,
+      isActualEnd:   eEnd   <= weekLast,
+      slot,
+    }
+  })
+}
+
 // 表示用: 担当者名をカンマ区切りで返す（4名以上は省略）
 function formatAssigneeNames(
   assignees: EventAssignee[] | undefined,
@@ -189,13 +252,27 @@ export default function CalendarView({
     return days
   }, [currentMonth])
 
-  // ── 日付→イベントマップ ──────────────────────────────────────────────────
+  // ── 日付→イベントマップ（複数日イベントは全日にマップ）─────────────────
   const eventsByDay = useMemo(() => {
     const map = new Map<string, Event[]>()
     events.forEach(e => {
-      const key = format(parseISO(e.start_at), 'yyyy-MM-dd')
-      if (!map.has(key)) map.set(key, [])
-      map.get(key)!.push(e)
+      const startKey = format(parseISO(e.start_at), 'yyyy-MM-dd')
+      const endKey   = format(parseISO(e.end_at),   'yyyy-MM-dd')
+      if (startKey === endKey) {
+        if (!map.has(startKey)) map.set(startKey, [])
+        map.get(startKey)!.push(e)
+      } else {
+        const startD = parseISO(e.start_at)
+        const endD   = parseISO(e.end_at)
+        let d = new Date(startD.getFullYear(), startD.getMonth(), startD.getDate())
+        const last = new Date(endD.getFullYear(), endD.getMonth(), endD.getDate())
+        while (d <= last) {
+          const key = format(d, 'yyyy-MM-dd')
+          if (!map.has(key)) map.set(key, [])
+          map.get(key)!.push(e)
+          d = addDays(d, 1)
+        }
+      }
     })
     return map
   }, [events])
@@ -211,6 +288,29 @@ export default function CalendarView({
     })
     return map
   }, [filteredTasks])
+
+  // ── グリッドセル用: 単日イベントのみ ─────────────────────────────────────
+  const singleDayEventsByDay = useMemo(() => {
+    const map = new Map<string, Event[]>()
+    events.forEach(e => {
+      const s   = format(parseISO(e.start_at), 'yyyy-MM-dd')
+      const end = format(parseISO(e.end_at),   'yyyy-MM-dd')
+      if (s === end) {
+        if (!map.has(s)) map.set(s, [])
+        map.get(s)!.push(e)
+      }
+    })
+    return map
+  }, [events])
+
+  // ── 週ごとに分割した日付配列 ─────────────────────────────────────────────
+  const calendarWeeks = useMemo(() => {
+    const weeks: (Date | null)[][] = []
+    for (let i = 0; i < calendarDays.length; i += 7) {
+      weeks.push(calendarDays.slice(i, i + 7))
+    }
+    return weeks
+  }, [calendarDays])
 
   const selectedDayEvents = useMemo(
     () => eventsByDay.get(format(selectedDate, 'yyyy-MM-dd')) ?? [],
@@ -454,95 +554,136 @@ export default function CalendarView({
           ))}
         </div>
 
-        <div className="grid grid-cols-7">
-          {calendarDays.map((day, idx) => {
-            if (!day) {
-              return (
-                <div
-                  key={`empty-${idx}`}
-                  className="min-h-[60px] sm:min-h-[80px]"
-                  style={{ borderRight: '1px solid #2a2a2a', borderBottom: '1px solid #2a2a2a', background: '#1a1a1a' }}
-                />
-              )
-            }
+        {calendarWeeks.map((week, wi) => {
+          const segments = getMultiDaySegments(week, events)
+          const maxSlot = segments.reduce((m, s) => Math.max(m, s.slot + 1), 0)
+          const clampedSlots = Math.min(maxSlot, MAX_BAR_SLOTS)
+          const barAreaHeight = BAR_TOP_OFFSET + clampedSlots * BAR_ROW_HEIGHT
+          const minCellHeight = barAreaHeight + 24
 
-            const dateKey = format(day, 'yyyy-MM-dd')
-            const cellEvents = eventsByDay.get(dateKey) ?? []
-            const cellTasks = tasksByDay.get(dateKey) ?? []
-            const totalItems = cellEvents.length + cellTasks.length
+          return (
+            <div key={wi} className="relative grid grid-cols-7">
+              {week.map((day, ci) => {
+                if (!day) {
+                  return (
+                    <div
+                      key={`empty-${wi}-${ci}`}
+                      style={{
+                        borderRight: ci === 6 ? 'none' : '1px solid #2a2a2a',
+                        borderBottom: '1px solid #2a2a2a',
+                        background: '#1a1a1a',
+                        minHeight: minCellHeight,
+                      }}
+                    />
+                  )
+                }
 
-            let remaining = MAX_VISIBLE
-            const visibleEvents = cellEvents.slice(0, remaining)
-            remaining = Math.max(0, remaining - visibleEvents.length)
-            const visibleTasks = cellTasks.slice(0, remaining)
-            const overflow = totalItems - (visibleEvents.length + visibleTasks.length)
+                const dateKey = format(day, 'yyyy-MM-dd')
+                const cellEvents = singleDayEventsByDay.get(dateKey) ?? []
+                const cellTasks = tasksByDay.get(dateKey) ?? []
+                const totalItems = cellEvents.length + cellTasks.length
 
-            const isThisToday = isSameDay(day, today)
-            const isSelected = isSameDay(day, selectedDate)
-            const dowRaw = getDay(day)
-            const isSat = dowRaw === 6
-            const isSun = dowRaw === 0
-            const colIdx = (dowRaw + 6) % 7
+                let remaining = MAX_VISIBLE
+                const visibleEvents = cellEvents.slice(0, remaining)
+                remaining = Math.max(0, remaining - visibleEvents.length)
+                const visibleTasks = cellTasks.slice(0, remaining)
+                const overflow = totalItems - (visibleEvents.length + visibleTasks.length)
 
-            return (
-              <div
-                key={dateKey}
-                className="min-h-[60px] sm:min-h-[80px] p-1 cursor-pointer transition-colors"
-                style={{
-                  borderRight: colIdx === 6 ? 'none' : '1px solid #2a2a2a',
-                  borderBottom: '1px solid #2a2a2a',
-                  background: isSelected && !isThisToday ? 'rgba(184,115,51,0.08)' : undefined,
-                }}
-                onClick={() => { setSelectedDate(day) }}
-              >
-                <div className="flex justify-end mb-0.5 px-0.5">
-                  <span
-                    className="text-[10px] sm:text-[11px] w-5 h-5 flex items-center justify-center rounded-full font-semibold leading-none"
-                    style={isThisToday
-                      ? { background: '#b87333', color: '#1a1a1a' }
-                      : { color: isSun ? '#f87171' : isSat ? '#38bdf8' : '#888' }
-                    }
+                const isThisToday = isSameDay(day, today)
+                const isSelected = isSameDay(day, selectedDate)
+                const dowRaw = getDay(day)
+                const isSat = dowRaw === 6
+                const isSun = dowRaw === 0
+
+                return (
+                  <div
+                    key={dateKey}
+                    className="relative cursor-pointer transition-colors"
+                    style={{
+                      borderRight: ci === 6 ? 'none' : '1px solid #2a2a2a',
+                      borderBottom: '1px solid #2a2a2a',
+                      background: isSelected && !isThisToday ? 'rgba(184,115,51,0.08)' : undefined,
+                      minHeight: minCellHeight,
+                      paddingTop: barAreaHeight,
+                    }}
+                    onClick={() => setSelectedDate(day)}
                   >
-                    {format(day, 'd')}
-                  </span>
-                </div>
+                    <div className="absolute top-1 right-1">
+                      <span
+                        className="text-[10px] sm:text-[11px] w-5 h-5 flex items-center justify-center rounded-full font-semibold leading-none"
+                        style={isThisToday
+                          ? { background: '#b87333', color: '#1a1a1a' }
+                          : { color: isSun ? '#f87171' : isSat ? '#38bdf8' : '#888' }
+                        }
+                      >
+                        {format(day, 'd')}
+                      </span>
+                    </div>
 
-                <div className="space-y-0.5">
-                  {visibleEvents.map(event => (
-                    <div
-                      key={event.id}
-                      title={event.title}
-                      className={`text-[10px] sm:text-[11px] leading-[15px] px-1.5 py-[1px] rounded truncate font-medium cursor-pointer ${getColorClass(event.created_by)}`}
-                      onClick={e => { e.stopPropagation(); setDetailEvent(event) }}
-                    >
-                      {(event as any).all_day ? '終 ' : ''}{event.title}
+                    <div className="space-y-0.5 px-1 pb-1">
+                      {visibleEvents.map(event => (
+                        <div
+                          key={event.id}
+                          title={event.title}
+                          className={`text-[10px] sm:text-[11px] leading-[15px] px-1.5 py-[1px] rounded truncate font-medium cursor-pointer ${getColorClass(event.created_by)}`}
+                          onClick={e => { e.stopPropagation(); setDetailEvent(event) }}
+                        >
+                          {(event as any).all_day ? '終 ' : ''}{event.title}
+                        </div>
+                      ))}
+                      {visibleTasks.map(task => (
+                        <div
+                          key={task.id}
+                          title={task.title}
+                          className={`text-[10px] sm:text-[11px] leading-[15px] px-1.5 py-[1px] rounded truncate font-medium cursor-pointer flex items-center gap-0.5 ${
+                            task.status === 'done'
+                              ? 'bg-[#2a2a2a] text-[#555] line-through'
+                              : 'bg-[rgba(184,115,51,0.15)] text-[#b87333] border border-[rgba(184,115,51,0.3)]'
+                          }`}
+                          onClick={e => { e.stopPropagation(); setDetailTask(task) }}
+                        >
+                          <CheckSquare size={8} className="shrink-0" />
+                          {task.title}
+                        </div>
+                      ))}
+                      {overflow > 0 && (
+                        <div className="text-[10px] px-1.5 leading-[14px]" style={{ color: '#555' }}>
+                          +{overflow}件
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  {visibleTasks.map(task => (
-                    <div
-                      key={task.id}
-                      title={task.title}
-                      className={`text-[10px] sm:text-[11px] leading-[15px] px-1.5 py-[1px] rounded truncate font-medium cursor-pointer flex items-center gap-0.5 ${
-                        task.status === 'done'
-                          ? 'bg-[#2a2a2a] text-[#555] line-through'
-                          : 'bg-[rgba(184,115,51,0.15)] text-[#b87333] border border-[rgba(184,115,51,0.3)]'
-                      }`}
-                      onClick={e => { e.stopPropagation(); setDetailTask(task) }}
-                    >
-                      <CheckSquare size={8} className="shrink-0" />
-                      {task.title}
-                    </div>
-                  ))}
-                  {overflow > 0 && (
-                    <div className="text-[10px] px-1.5 leading-[14px]" style={{ color: '#555' }}>
-                      +{overflow}件
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
+                  </div>
+                )
+              })}
+
+              {segments.map(seg => {
+                if (seg.slot >= MAX_BAR_SLOTS) return null
+                const top = BAR_TOP_OFFSET + seg.slot * BAR_ROW_HEIGHT
+                const leftPct = (seg.startCol / 7) * 100
+                const widthPct = ((seg.endCol - seg.startCol + 1) / 7) * 100
+                const insetL = seg.isActualStart ? 2 : 0
+                const insetR = seg.isActualEnd ? 2 : 0
+                return (
+                  <div
+                    key={`${seg.event.id}-w${wi}`}
+                    className={`absolute cursor-pointer text-[10px] leading-none px-1.5 flex items-center font-medium truncate ${getColorClass(seg.event.created_by)}`}
+                    style={{
+                      top,
+                      left: `calc(${leftPct}% + ${insetL}px)`,
+                      width: `calc(${widthPct}% - ${insetL + insetR}px)`,
+                      height: BAR_HEIGHT,
+                      zIndex: 2,
+                      borderRadius: `${seg.isActualStart ? 3 : 0}px ${seg.isActualEnd ? 3 : 0}px ${seg.isActualEnd ? 3 : 0}px ${seg.isActualStart ? 3 : 0}px`,
+                    }}
+                    onClick={e => { e.stopPropagation(); setDetailEvent(seg.event) }}
+                  >
+                    {seg.isActualStart ? seg.event.title : ''}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
       </div>
 
       {/* ── 選択日の詳細パネル ── */}
