@@ -14,7 +14,11 @@ export async function createGroup(name: string, description?: string): Promise<G
     .select('*')
     .single()
   if (error) throw error
-  // group_membersへの追加はDBトリガー(trg_add_group_creator)が自動実行
+
+  // トリガーに依存せず明示的に追加（本番でトリガーが遅延・失敗するケースを防ぐ）
+  await supabase
+    .from('group_members')
+    .upsert({ group_id: group.id, user_id: user.id, role: 'admin' }, { onConflict: 'group_id,user_id' })
 
   return group
 }
