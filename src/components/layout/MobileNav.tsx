@@ -52,16 +52,29 @@ export default function MobileNav({
       >
         <Menu size={22} />
       </button>
-      <span style={{ fontWeight: 200, letterSpacing: '0.25em', fontSize: '0.9rem', textTransform: 'uppercase', color: '#f0f0f0' }}>
+      <Link
+        href="/dashboard"
+        aria-label="ホームへ"
+        style={{ fontWeight: 200, letterSpacing: '0.25em', fontSize: '0.9rem', textTransform: 'uppercase', color: '#f0f0f0', cursor: 'pointer', transition: 'color 0.15s' }}
+        onMouseEnter={e => (e.currentTarget.style.color = '#b87333')}
+        onMouseLeave={e => (e.currentTarget.style.color = '#f0f0f0')}
+      >
         RUCHIA
-      </span>
+      </Link>
 
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="left" className="w-64 p-0 flex flex-col" style={{ background: 'var(--sidebar)' }}>
           <div className="px-6 py-6">
-            <span style={{ fontWeight: 200, letterSpacing: '0.25em', fontSize: '1rem', textTransform: 'uppercase', color: '#f0f0f0' }}>
+            <Link
+              href="/dashboard"
+              onClick={() => setOpen(false)}
+              aria-label="ホームへ"
+              style={{ fontWeight: 200, letterSpacing: '0.25em', fontSize: '1rem', textTransform: 'uppercase', color: '#f0f0f0', cursor: 'pointer', transition: 'color 0.15s' }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#b87333')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#f0f0f0')}
+            >
               RUCHIA
-            </span>
+            </Link>
           </div>
 
           <nav className="flex-1 px-3 space-y-0.5">

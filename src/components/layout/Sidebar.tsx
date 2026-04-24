@@ -41,9 +41,15 @@ export default function Sidebar({
   return (
     <aside className="hidden md:flex w-64 flex-col" style={{ background: 'var(--sidebar)' }}>
       <div className="px-6 py-6">
-        <span style={{ fontWeight: 200, letterSpacing: '0.25em', fontSize: '1rem', textTransform: 'uppercase', color: '#f0f0f0' }}>
+        <Link
+          href="/dashboard"
+          aria-label="ホームへ"
+          style={{ fontWeight: 200, letterSpacing: '0.25em', fontSize: '1rem', textTransform: 'uppercase', color: '#f0f0f0', cursor: 'pointer', transition: 'color 0.15s' }}
+          onMouseEnter={e => (e.currentTarget.style.color = '#b87333')}
+          onMouseLeave={e => (e.currentTarget.style.color = '#f0f0f0')}
+        >
           RUCHIA
-        </span>
+        </Link>
       </div>
 
       <nav className="flex-1 px-3 space-y-0.5">
