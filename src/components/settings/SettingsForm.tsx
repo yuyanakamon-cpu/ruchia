@@ -36,7 +36,13 @@ const PREF_LABELS: Record<keyof NotificationPreferences, string> = {
   task_reminder:     'タスク期限のリマインダー',
 }
 
-export default function SettingsForm({ profile }: { profile: Profile | null }) {
+export default function SettingsForm({
+  profile,
+  userId,
+}: {
+  profile: Profile | null
+  userId: string
+}) {
   const [displayName, setDisplayName] = useState(profile?.display_name ?? '')
   const [telegramChatId, setTelegramChatId] = useState(profile?.telegram_chat_id ?? '')
   const [minutesBefore, setMinutesBefore] = useState(String(profile?.notify_minutes_before ?? 15))
@@ -53,14 +59,11 @@ export default function SettingsForm({ profile }: { profile: Profile | null }) {
   }
 
   async function save() {
-    if (!profile) {
-      toast.error('プロフィール情報を読み込めませんでした。ページをリロードしてください。')
-      return
-    }
     setSaving(true)
     const { error } = await supabase
       .from('profiles')
-      .update({
+      .upsert({
+        id: userId,
         display_name: displayName,
         telegram_chat_id: telegramChatId || null,
         notify_events_enabled: prefs.event_reminder,
@@ -68,9 +71,12 @@ export default function SettingsForm({ profile }: { profile: Profile | null }) {
         notify_minutes_before: Number(minutesBefore),
         notification_preferences: prefs,
       })
-      .eq('id', profile.id)
-    if (error) toast.error('保存に失敗しました')
-    else toast.success('設定を保存しました')
+    if (error) {
+      console.error('[SettingsForm] save error:', error)
+      toast.error('保存に失敗しました')
+    } else {
+      toast.success('設定を保存しました')
+    }
     setSaving(false)
   }
 
