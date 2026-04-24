@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import type { Group, GroupMember } from '@/types/group'
 import { notifyUser } from '@/lib/telegram'
 import { notificationMessages } from '@/lib/notification-messages'
@@ -44,6 +45,18 @@ export async function getGroupById(id: string): Promise<Group & { members: Group
     .eq('id', id)
     .single()
   if (error) throw error
+  return data as Group & { members: GroupMember[] }
+}
+
+// RLS をバイパスして取得（詳細ページ用: アプリ側で認可チェック）
+export async function getGroupByIdAdmin(id: string): Promise<(Group & { members: GroupMember[] }) | null> {
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from('groups')
+    .select('*, members:group_members(id, group_id, user_id, role, joined_at, profile:profiles(id, display_name))')
+    .eq('id', id)
+    .single()
+  if (error) return null
   return data as Group & { members: GroupMember[] }
 }
 
