@@ -31,7 +31,7 @@ export async function getMyGroups(): Promise<(Group & { members: GroupMember[] }
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('groups')
-    .select('*, members:group_members(id, group_id, user_id, role, joined_at, profile:profiles(id, display_name))')
+    .select('*, members:group_members(id, group_id, user_id, role, joined_at)')
     .order('created_at', { ascending: false })
   if (error) throw error
   return (data ?? []) as (Group & { members: GroupMember[] })[]
@@ -41,7 +41,7 @@ export async function getGroupById(id: string): Promise<Group & { members: Group
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('groups')
-    .select('*, members:group_members(id, group_id, user_id, role, joined_at, profile:profiles(id, display_name))')
+    .select('*, members:group_members(id, group_id, user_id, role, joined_at)')
     .eq('id', id)
     .single()
   if (error) throw error
@@ -53,7 +53,7 @@ export async function getGroupByIdAdmin(id: string): Promise<(Group & { members:
   const admin = createAdminClient()
   const { data, error } = await admin
     .from('groups')
-    .select('*, members:group_members(id, group_id, user_id, role, joined_at, profile:profiles(id, display_name))')
+    .select('*, members:group_members(id, group_id, user_id, role, joined_at)')
     .eq('id', id)
     .single()
   if (error) {
