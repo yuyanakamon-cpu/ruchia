@@ -52,7 +52,10 @@ export async function addMembers(groupId: string, userIds: string[]): Promise<vo
   const supabase = await createClient()
   const { error } = await supabase
     .from('group_members')
-    .insert(userIds.map(uid => ({ group_id: groupId, user_id: uid, role: 'member' })))
+    .upsert(
+      userIds.map(uid => ({ group_id: groupId, user_id: uid, role: 'member' })),
+      { onConflict: 'group_id,user_id', ignoreDuplicates: true },
+    )
   if (error) throw error
 
   const { data: group } = await supabase

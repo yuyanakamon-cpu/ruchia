@@ -15,8 +15,16 @@ export default function NewGroupPage() {
   const [description, setDescription] = useState('')
   const [selectedMembers, setSelectedMembers] = useState<UserSearchResult[]>([])
   const [saving, setSaving] = useState(false)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const router = useRouter()
   const supabase = createClient()
+
+  // 自分のIDを取得してオートコンプリートから除外する
+  useState(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) setCurrentUserId(user.id)
+    })
+  })
 
   async function handleCreate() {
     if (!name.trim()) return
@@ -33,11 +41,15 @@ export default function NewGroupPage() {
         .single()
       if (error) throw error
 
-      // 初期メンバーを一括追加（一部失敗してもグループ作成は成功とする）
-      if (selectedMembers.length > 0) {
+      // 作成者自身を除外した上で初期メンバーを追加（トリガーと重複しないよう upsert）
+      const otherMembers = selectedMembers.filter(m => m.id !== user.id)
+      if (otherMembers.length > 0) {
         const { error: memberError } = await supabase
           .from('group_members')
-          .insert(selectedMembers.map(m => ({ group_id: group.id, user_id: m.id, role: 'member' })))
+          .upsert(
+            otherMembers.map(m => ({ group_id: group.id, user_id: m.id, role: 'member' })),
+            { onConflict: 'group_id,user_id', ignoreDuplicates: true },
+          )
         if (memberError) {
           console.error('メンバー追加エラー:', memberError)
           toast.warning('グループは作成しましたが、一部メンバーの追加に失敗しました')
@@ -63,8 +75,11 @@ export default function NewGroupPage() {
     setSelectedMembers(prev => prev.filter(m => m.id !== id))
   }
 
-  // 検索から除外: 既に選択済みのユーザー
-  const excludeIds = selectedMembers.map(m => m.id)
+  // 検索から除外: 自分自身 + 既に選択済みのユーザー
+  const excludeIds = [
+    ...(currentUserId ? [currentUserId] : []),
+    ...selectedMembers.map(m => m.id),
+  ]
 
   return (
     <div className="min-h-full p-4 sm:p-8" style={{ background: '#1a1a1a', color: '#f0f0f0' }}>
