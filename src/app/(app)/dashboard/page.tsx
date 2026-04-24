@@ -3,6 +3,7 @@ import { format, isToday, isPast, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import { Calendar, CheckSquare, Clock, MapPin, AlertCircle, ArrowRight } from 'lucide-react'
 import Link from 'next/link'
+import PendingInvitations, { type PendingInvite } from '@/components/dashboard/PendingInvitations'
 
 const priorityStyles = {
   high: { background: 'rgba(204,102,102,0.2)', color: '#cc6666', border: '1px solid rgba(204,102,102,0.3)' },
@@ -25,12 +26,35 @@ export default async function DashboardPage() {
   const todayStr = format(today, 'yyyy-MM-dd')
   const tomorrowStr = format(new Date(today.getTime() + 86400000), 'yyyy-MM-dd')
 
-  const [{ data: todayEvents }, { data: myTasks }, { data: allTasks }, { data: profile }] = await Promise.all([
+  const [{ data: todayEvents }, { data: myTasks }, { data: allTasks }, { data: profile }, { data: rawInvites }] = await Promise.all([
     supabase.from('events').select('*').gte('start_at', `${todayStr}T00:00:00`).lt('start_at', `${tomorrowStr}T00:00:00`).order('start_at'),
     supabase.from('tasks').select('*').eq('assignee_id', user!.id).neq('status', 'done').order('due_date', { nullsFirst: false }),
     supabase.from('tasks').select('status').eq('assignee_id', user!.id),
     supabase.from('profiles').select('display_name').eq('id', user!.id).single(),
+    supabase.from('event_attendees').select('id, events(id, title, start_at, end_at, location, created_by, group_id)').eq('user_id', user!.id).eq('status', 'pending').order('created_at', { ascending: false }),
   ])
+
+  // 参加依頼: 作成者名・グループ名を補完
+  const creatorIds = [...new Set((rawInvites ?? []).map(r => (r.events as any)?.created_by).filter(Boolean) as string[])]
+  const groupIds = [...new Set((rawInvites ?? []).map(r => (r.events as any)?.group_id).filter(Boolean) as string[])]
+  const [{ data: inviteCreators }, { data: inviteGroups }] = await Promise.all([
+    creatorIds.length > 0 ? supabase.from('profiles').select('id, display_name').in('id', creatorIds) : Promise.resolve({ data: [] as { id: string; display_name: string | null }[] }),
+    groupIds.length > 0   ? supabase.from('groups').select('id, name').in('id', groupIds)            : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+  ])
+  const pendingInvites: PendingInvite[] = (rawInvites ?? []).map(r => {
+    const ev = r.events as any
+    if (!ev) return null
+    return {
+      attendeeId:  r.id,
+      eventId:     ev.id,
+      title:       ev.title,
+      start_at:    ev.start_at,
+      end_at:      ev.end_at,
+      location:    ev.location ?? null,
+      creatorName: inviteCreators?.find(c => c.id === ev.created_by)?.display_name ?? '不明',
+      groupName:   ev.group_id ? (inviteGroups?.find(g => g.id === ev.group_id)?.name ?? null) : null,
+    }
+  }).filter(Boolean) as PendingInvite[]
 
   const totalTasks = allTasks?.length ?? 0
   const doneTasks = allTasks?.filter(t => t.status === 'done').length ?? 0
@@ -86,6 +110,8 @@ export default async function DashboardPage() {
           <p className="text-sm font-medium" style={{ color: urgentTasks > 0 ? '#cc6666' : '#888' }}>期限切れ・今日まで</p>
         </div>
       </div>
+
+      <PendingInvitations initialInvites={pendingInvites} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
         <div className="rounded-2xl overflow-hidden" style={{ background: '#232323', border: '1px solid #2a2a2a' }}>
