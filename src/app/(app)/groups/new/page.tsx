@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { createClient } from '@/lib/supabase/client'
@@ -20,11 +20,11 @@ export default function NewGroupPage() {
   const supabase = createClient()
 
   // 自分のIDを取得してオートコンプリートから除外する
-  useState(() => {
+  useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) setCurrentUserId(user.id)
     })
-  })
+  }, [])
 
   async function handleCreate() {
     if (!name.trim()) return
@@ -33,7 +33,7 @@ export default function NewGroupPage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('未ログイン')
 
-      // グループ作成 (トリガーで作成者がadminとしてgroup_membersに自動追加される)
+      // グループ作成
       const { data: group, error } = await supabase
         .from('groups')
         .insert({ name: name.trim(), description: description.trim() || null, created_by: user.id })
@@ -41,7 +41,15 @@ export default function NewGroupPage() {
         .single()
       if (error) throw error
 
-      // 作成者自身を除外した上で初期メンバーを追加（トリガーと重複しないよう upsert）
+      // トリガー遅延に備えて作成者を明示的に追加（ignoreDuplicates でトリガー済みでも安全）
+      await supabase
+        .from('group_members')
+        .upsert(
+          { group_id: group.id, user_id: user.id, role: 'admin' },
+          { onConflict: 'group_id,user_id', ignoreDuplicates: true },
+        )
+
+      // 作成者以外の初期メンバーを追加
       const otherMembers = selectedMembers.filter(m => m.id !== user.id)
       if (otherMembers.length > 0) {
         const { error: memberError } = await supabase

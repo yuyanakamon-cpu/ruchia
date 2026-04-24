@@ -12,16 +12,22 @@ export default async function GroupDetailPage({
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
+  console.log('[GroupPage] id:', id, 'user:', user?.id)
+
   let group: Awaited<ReturnType<typeof getGroupById>>
   try {
     group = await getGroupById(id)
   } catch (e) {
-    console.error('[GroupDetail] getGroupById failed:', e)
+    console.error('[GroupPage] getGroupById failed:', e)
     notFound()
   }
 
+  console.log('[GroupPage] group.created_by:', group!.created_by, 'members count:', group!.members?.length)
+
   const members = group!.members ?? []
   const myMember = members.find(m => m.user_id === user!.id)
+
+  console.log('[GroupPage] myMember:', myMember?.user_id, 'will notFound:', !myMember && group!.created_by !== user!.id)
 
   // 作成直後のトリガー遅延を考慮: 自分が created_by ならアクセス許可
   if (!myMember && group!.created_by !== user!.id) notFound()
