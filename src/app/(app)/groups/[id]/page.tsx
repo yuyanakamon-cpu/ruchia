@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { getGroupByIdAdmin } from '@/lib/groups'
+import { getGroupById } from '@/lib/groups'
 import GroupDetailView from '@/components/groups/GroupDetailView'
 
 export default async function GroupDetailPage({
@@ -14,17 +14,21 @@ export default async function GroupDetailPage({
 
   if (!user) notFound()
 
-  // admin client で RLS をバイパスして取得（RLS の遅延・未適用でも確実に取得できる）
-  const group = await getGroupByIdAdmin(id)
-  if (!group) notFound()
+  let group: Awaited<ReturnType<typeof getGroupById>>
+  try {
+    group = await getGroupById(id)
+  } catch (e) {
+    console.error('[GroupPage] getGroupById failed:', e)
+    notFound()
+  }
 
-  console.log('[GroupPage] id:', id, 'created_by:', group.created_by, 'user:', user.id, 'members:', group.members?.length)
+  console.log('[GroupPage] id:', id, 'created_by:', group!.created_by, 'user:', user.id, 'members:', group!.members?.length)
 
-  const members = group.members ?? []
+  const members = group!.members ?? []
   const myMember = members.find(m => m.user_id === user.id)
 
-  // アプリ側の認可チェック: メンバーか作成者のみアクセス可
-  if (!myMember && group.created_by !== user.id) notFound()
+  // メンバーか作成者のみアクセス可
+  if (!myMember && group!.created_by !== user.id) notFound()
 
   // プロフィール名を取得
   const userIds = members.map(m => m.user_id)
@@ -38,7 +42,7 @@ export default async function GroupDetailPage({
 
   return (
     <GroupDetailView
-      group={group}
+      group={group!}
       members={members}
       profileMap={profileMap}
       currentUserId={user.id}
