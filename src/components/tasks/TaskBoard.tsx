@@ -22,10 +22,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { CheckSquare, Plus, Check, Pencil, Trash2 } from 'lucide-react'
 import ViewToggle, { type ViewMode } from '@/components/shared/ViewToggle'
-import ApprovalStatusBadge from '@/components/shared/ApprovalStatusBadge'
 import type { Task, Profile, TaskAssignee } from '@/types'
 import type { Group, GroupMember } from '@/types/group'
-import { createTask, updateTask, respondToTaskApproval } from '@/lib/actions/tasks'
+import { createTask, updateTask } from '@/lib/actions/tasks'
 
 function toLocalDatetimeInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -44,7 +43,6 @@ const priorityLabel = { low: '低', medium: '中', high: '高' }
 type FormState = {
   title: string
   description: string
-  assignee_id: string
   assignee_ids: string[]
   group_id: string
   due_date: string
@@ -52,7 +50,7 @@ type FormState = {
 }
 
 const emptyForm: FormState = {
-  title: '', description: '', assignee_id: '', assignee_ids: [], group_id: '', due_date: '', priority: 'medium',
+  title: '', description: '', assignee_ids: [], group_id: '', due_date: '', priority: 'medium',
 }
 
 export default function TaskBoard({
@@ -88,7 +86,6 @@ export default function TaskBoard({
     setForm({
       title: task.title,
       description: task.description ?? '',
-      assignee_id: task.assignee_id ?? '',
       assignee_ids: getEffectiveTaskAssignees(task).map(a => a.user_id),
       group_id: task.group_id ?? '',
       due_date: task.due_date ? toLocalDatetimeInput(new Date(task.due_date)) : '',
@@ -111,7 +108,7 @@ export default function TaskBoard({
     const input = {
       title: form.title,
       description: form.description || null,
-      assignee_id: form.assignee_id || null,
+      assignee_id: null,
       assignee_ids: form.assignee_ids,
       group_id: form.group_id || null,
       due_date: form.due_date ? new Date(form.due_date).toISOString() : null,
@@ -148,19 +145,6 @@ export default function TaskBoard({
     if (error) { toast.error('更新に失敗しました'); return }
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t))
     if (status === 'done') toast.success('タスクを完了しました！')
-  }
-
-  async function updateTaskApproval(taskId: string, approval_status: 'accepted' | 'rejected') {
-    const result = await respondToTaskApproval(taskId, approval_status)
-    if (result.error) { toast.error('更新に失敗しました'); return }
-    setTasks(prev => prev.map(t => t.id === taskId ? {
-      ...t,
-      assignees: t.assignees?.map(a =>
-        a.user_id === currentUserId ? { ...a, approval_status } : a
-      ),
-      ...(t.assigned_to === currentUserId ? { approval_status } : {}),
-    } : t))
-    toast.success(approval_status === 'accepted' ? 'タスクを受けました' : 'タスクを断りました')
   }
 
   async function deleteTask(taskId: string) {
@@ -203,11 +187,7 @@ export default function TaskBoard({
     return `${names.slice(0, 2).join(', ')} 他${names.length - 2}名`
   }
 
-  const assigneeName = (task: Task) =>
-    members.find(m => m.id === task.assignee_id)?.display_name ?? null
-
-  const canEdit = (task: Task) =>
-    task.created_by === currentUserId || task.assignee_id === currentUserId
+  const canEdit = (task: Task) => task.created_by === currentUserId
 
   const canDelete = (task: Task) => task.created_by === currentUserId
 
@@ -273,52 +253,25 @@ export default function TaskBoard({
                   </Select>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>担当者</Label>
-                  <Select
-                    value={form.assignee_id}
-                    onValueChange={v => setForm(p => ({ ...p, assignee_id: v === '__none__' ? '' : (v ?? '') }))}
-                    items={[
-                      { value: '__none__', label: '未割当' },
-                      ...members.map(m => ({
-                        value: m.id,
-                        label: (m.display_name ?? '名前未設定') + (m.id === currentUserId ? '（自分）' : ''),
-                      })),
-                    ]}
-                  >
-                    <SelectTrigger><SelectValue placeholder="未割当" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__none__">未割当</SelectItem>
-                      {members.map(m => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.display_name ?? '名前未設定'}{m.id === currentUserId ? '（自分）' : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>優先度</Label>
-                  <Select
-                    value={form.priority}
-                    onValueChange={v => { if (v) setForm(p => ({ ...p, priority: v })) }}
-                    items={[
-                      { value: 'low', label: '低' },
-                      { value: 'medium', label: '中' },
-                      { value: 'high', label: '高' },
-                    ]}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">低</SelectItem>
-                      <SelectItem value="medium">中</SelectItem>
-                      <SelectItem value="high">高</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="space-y-1.5">
+                <Label>優先度</Label>
+                <Select
+                  value={form.priority}
+                  onValueChange={v => { if (v) setForm(p => ({ ...p, priority: v })) }}
+                  items={[
+                    { value: 'low', label: '低' },
+                    { value: 'medium', label: '中' },
+                    { value: 'high', label: '高' },
+                  ]}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">低</SelectItem>
+                    <SelectItem value="medium">中</SelectItem>
+                    <SelectItem value="high">高</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-              {/* 承認担当者（複数選択可・グループ選択時はグループメンバーのみ、未選択時は全メンバー） */}
               {(() => {
                 const candidateMembers = form.group_id
                   ? (groups.find(g => g.id === form.group_id)?.members ?? []).map(m => ({
@@ -331,11 +284,10 @@ export default function TaskBoard({
                   : members.map(m => ({ id: m.id, display_name: m.display_name ?? '名前未設定' }))
                 return candidateMembers.length > 0 ? (
                   <div className="space-y-1.5">
-                    <Label>承認担当者（複数選択可）</Label>
+                    <Label>担当者（複数選択可）</Label>
                     <div className="rounded-lg p-1.5 space-y-0.5" style={{ background: '#2a2a2a', border: '1px solid #333' }}>
                       {candidateMembers.map(m => {
                         const checked = form.assignee_ids.includes(m.id)
-                        const isOther = m.id !== currentUserId
                         return (
                           <label key={m.id} className="flex items-center gap-2.5 cursor-pointer px-2.5 py-2 rounded transition-colors hover:bg-[#333]">
                             <input
@@ -347,17 +299,12 @@ export default function TaskBoard({
                             <span className="text-sm flex-1" style={{ color: '#f0f0f0' }}>
                               {m.display_name}{m.id === currentUserId ? ' （自分）' : ''}
                             </span>
-                            {checked && isOther && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(212,160,85,0.15)', color: '#d4a055' }}>
-                                承認依頼
-                              </span>
-                            )}
                           </label>
                         )
                       })}
                     </div>
                     {form.assignee_ids.some(id => id !== currentUserId) && (
-                      <p className="text-xs" style={{ color: '#d4a055' }}>担当者に承認依頼が送られます</p>
+                      <p className="text-xs" style={{ color: '#888' }}>担当者に選ばれた人に通知が届きます</p>
                     )}
                   </div>
                 ) : null
@@ -399,10 +346,6 @@ export default function TaskBoard({
                           <Badge variant={priorityColor[task.priority as keyof typeof priorityColor]} className="text-xs">
                             {priorityLabel[task.priority as keyof typeof priorityLabel]}
                           </Badge>
-                          {(() => {
-                            const myAssignee = getEffectiveTaskAssignees(task).find(a => a.user_id === currentUserId)
-                            return myAssignee ? <ApprovalStatusBadge status={myAssignee.approval_status} /> : null
-                          })()}
                         </div>
                       </div>
 
@@ -411,11 +354,8 @@ export default function TaskBoard({
                       )}
 
                       <div className="text-xs space-y-0.5 mb-3">
-                        {assigneeName(task) && (
-                          <p style={{ color: '#888' }}>👤 {assigneeName(task)}</p>
-                        )}
                         {formatTaskAssigneeNames(task) && (
-                          <p style={{ color: '#888' }}>📋 {formatTaskAssigneeNames(task)}</p>
+                          <p style={{ color: '#888' }}>👤 {formatTaskAssigneeNames(task)}</p>
                         )}
                         {task.due_date && (
                           <p className={dueDateColor(task)}>
@@ -423,28 +363,6 @@ export default function TaskBoard({
                           </p>
                         )}
                       </div>
-
-                      {getEffectiveTaskAssignees(task).some(a => a.user_id === currentUserId && a.approval_status === 'pending') && (
-                        <div className="rounded-lg p-3 mb-3 space-y-2" style={{ background: 'rgba(212,160,85,0.08)', border: '1px solid rgba(212,160,85,0.2)' }}>
-                          <p className="text-xs font-medium" style={{ color: '#d4a055' }}>このタスクが担当に割り当てられました</p>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => updateTaskApproval(task.id, 'accepted')}
-                              className="flex-1 text-xs py-1.5 rounded font-medium transition-opacity hover:opacity-80"
-                              style={{ background: '#b87333', color: '#1a1a1a' }}
-                            >
-                              受ける
-                            </button>
-                            <button
-                              onClick={() => updateTaskApproval(task.id, 'rejected')}
-                              className="flex-1 text-xs py-1.5 rounded font-medium transition-opacity hover:opacity-80"
-                              style={{ border: '1px solid #c66', color: '#c66', background: 'transparent' }}
-                            >
-                              受けない
-                            </button>
-                          </div>
-                        </div>
-                      )}
 
                       <div className="flex items-center justify-between">
                         <div className="flex gap-1">

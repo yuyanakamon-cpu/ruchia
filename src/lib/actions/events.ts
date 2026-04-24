@@ -13,7 +13,6 @@ type EventInput = {
   end_at: string
   all_day: boolean
   group_id: string | null
-  assignee_ids: string[]
   attendee_ids: string[]
 }
 
@@ -36,7 +35,6 @@ export async function createEvent(input: EventInput): Promise<EventResult> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: '認証が必要です' }
 
-  const otherAssignees = input.assignee_ids.filter(id => id !== user.id)
   const { data: event, error } = await supabase
     .from('events')
     .insert({
@@ -48,70 +46,53 @@ export async function createEvent(input: EventInput): Promise<EventResult> {
       all_day: input.all_day,
       created_by: user.id,
       group_id: input.group_id,
-      assigned_to: input.assignee_ids[0] ?? null,
-      approval_status: otherAssignees.length > 0 ? 'pending' : 'none',
-      approval_updated_at: otherAssignees.length > 0 ? new Date().toISOString() : null,
+      approval_status: 'none',
     })
     .select('*')
     .single()
   if (error) return { error: error.message }
 
-  if (input.assignee_ids.length > 0) {
-    await supabase.from('event_assignees').insert(
-      input.assignee_ids.map(uid => ({
-        event_id: event.id,
-        user_id: uid,
-        approval_status: uid === user.id ? 'accepted' : 'pending',
-      }))
-    )
-  }
+  // 参加依頼メンバーを追加
   if (input.attendee_ids.length > 0) {
     await supabase.from('event_attendees').insert(
       input.attendee_ids.map(uid => ({ event_id: event.id, user_id: uid, status: 'pending' }))
     )
   }
 
-  const assignees: EventAssignee[] = input.assignee_ids.map(uid => ({
-    id: '',
-    event_id: event.id,
-    user_id: uid,
-    approval_status: (uid === user.id ? 'accepted' : 'pending') as EventAssignee['approval_status'],
-    approval_updated_at: null,
-  }))
+  const creatorName = await getDisplayName(supabase, user.id)
 
-  // Assignees (not self) → event_assigned
-  if (otherAssignees.length > 0) {
-    const creatorName = await getDisplayName(supabase, user.id)
-    for (const uid of otherAssignees) {
-      await notifyUser(
-        uid,
-        notificationMessages.eventAssigned(event.title, creatorName, event.start_at),
-        'event_assigned',
-      )
-    }
-  }
-
-  // Other group members (not self, not assignees) → group_update
+  // グループメンバー全員（自分以外）に通知
   if (input.group_id) {
     const [{ data: members }, { data: group }] = await Promise.all([
       supabase.from('group_members').select('user_id').eq('group_id', input.group_id),
       supabase.from('groups').select('name').eq('id', input.group_id).single(),
     ])
-    const creatorName = await getDisplayName(supabase, user.id)
-    const groupOnlyIds = (members ?? [])
+    const groupMemberIds = (members ?? [])
       .map((m: { user_id: string }) => m.user_id)
-      .filter((id: string) => id !== user.id && !otherAssignees.includes(id))
+      .filter((id: string) => id !== user.id)
 
-    if (groupOnlyIds.length > 0) {
+    if (groupMemberIds.length > 0) {
       await notifyUsers(
-        groupOnlyIds,
+        groupMemberIds,
         notificationMessages.groupNewEvent(group?.name ?? '', event.title, creatorName, event.start_at),
         'group_update',
       )
     }
   }
 
-  return { event: { ...event, attendees: [], assignees } }
+  // 参加依頼メンバー（自分以外）に通知
+  const otherAttendees = input.attendee_ids.filter(id => id !== user.id)
+  if (otherAttendees.length > 0) {
+    for (const uid of otherAttendees) {
+      await notifyUser(
+        uid,
+        notificationMessages.attendeeInvite(event.title, creatorName, event.start_at),
+        'event_assigned',
+      )
+    }
+  }
+
+  return { event: { ...event, attendees: [], assignees: [] } }
 }
 
 export async function updateEvent(eventId: string, input: EventInput): Promise<EventResult> {
@@ -119,17 +100,6 @@ export async function updateEvent(eventId: string, input: EventInput): Promise<E
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: '認証が必要です' }
 
-  // Fetch existing assignees for diff
-  const { data: existing } = await supabase
-    .from('event_assignees')
-    .select('user_id')
-    .eq('event_id', eventId)
-  const existingIds = (existing ?? []).map((a: { user_id: string }) => a.user_id)
-  const newAssigneeIds = input.assignee_ids.filter(
-    id => !existingIds.includes(id) && id !== user.id
-  )
-
-  const otherAssignees = input.assignee_ids.filter(id => id !== user.id)
   const { data: event, error } = await supabase
     .from('events')
     .update({
@@ -140,62 +110,29 @@ export async function updateEvent(eventId: string, input: EventInput): Promise<E
       end_at: input.end_at,
       all_day: input.all_day,
       group_id: input.group_id,
-      assigned_to: input.assignee_ids[0] ?? null,
-      approval_status: otherAssignees.length > 0 ? 'pending' : 'none',
-      approval_updated_at: otherAssignees.length > 0 ? new Date().toISOString() : null,
+      approval_status: 'none',
     })
     .eq('id', eventId)
     .select('*')
     .single()
   if (error) return { error: error.message }
 
-  await supabase.from('event_assignees').delete().eq('event_id', eventId)
-  if (input.assignee_ids.length > 0) {
-    await supabase.from('event_assignees').insert(
-      input.assignee_ids.map(uid => ({
-        event_id: eventId,
-        user_id: uid,
-        approval_status: uid === user.id ? 'accepted' : 'pending',
-      }))
-    )
-  }
-
-  const assignees: EventAssignee[] = input.assignee_ids.map(uid => ({
-    id: '',
-    event_id: eventId,
-    user_id: uid,
-    approval_status: (uid === user.id ? 'accepted' : 'pending') as EventAssignee['approval_status'],
-    approval_updated_at: null,
-  }))
-
-  // Only notify newly added assignees
-  if (newAssigneeIds.length > 0) {
-    const creatorName = await getDisplayName(supabase, user.id)
-    for (const uid of newAssigneeIds) {
-      await notifyUser(
-        uid,
-        notificationMessages.eventAssigned(event.title, creatorName, event.start_at),
-        'event_assigned',
-      )
-    }
-  }
-
-  return { event: { ...event, assignees } }
+  return { event: { ...event, assignees: [] } }
 }
 
-export async function respondToEventApproval(
+export async function respondToEventAttendance(
   eventId: string,
-  status: 'accepted' | 'rejected',
+  attendeeId: string,
+  status: 'accepted' | 'declined',
 ): Promise<{ error?: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: '認証が必要です' }
 
   const { error } = await supabase
-    .from('event_assignees')
-    .update({ approval_status: status, approval_updated_at: new Date().toISOString() })
-    .eq('event_id', eventId)
-    .eq('user_id', user.id)
+    .from('event_attendees')
+    .update({ status, responded_at: new Date().toISOString() })
+    .eq('id', attendeeId)
   if (error) return { error: error.message }
 
   const { data: event } = await supabase
@@ -207,8 +144,8 @@ export async function respondToEventApproval(
   if (event?.created_by && event.created_by !== user.id) {
     const responderName = await getDisplayName(supabase, user.id)
     const msg = status === 'accepted'
-      ? notificationMessages.eventApproved(event.title, responderName)
-      : notificationMessages.eventRejected(event.title, responderName)
+      ? notificationMessages.attendeeAccepted(event.title, responderName)
+      : notificationMessages.attendeeDeclined(event.title, responderName)
     await notifyUser(event.created_by, msg, 'approval_response')
   }
 

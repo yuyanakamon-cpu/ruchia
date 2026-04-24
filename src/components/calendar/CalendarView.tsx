@@ -30,11 +30,10 @@ import {
   ChevronLeft, ChevronRight, Clock, MapPin, Plus, Pencil, Trash2,
   Users, CheckSquare, ExternalLink,
 } from 'lucide-react'
-import type { Event, Task, Profile, EventAssignee } from '@/types'
+import type { Event, Task, Profile } from '@/types'
 import type { Group, GroupMember } from '@/types/group'
 import ViewToggle, { type ViewMode } from '@/components/shared/ViewToggle'
-import ApprovalStatusBadge from '@/components/shared/ApprovalStatusBadge'
-import { createEvent, updateEvent, respondToEventApproval } from '@/lib/actions/events'
+import { createEvent, updateEvent, respondToEventAttendance } from '@/lib/actions/events'
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 const PILL_COLORS = [
@@ -80,13 +79,12 @@ type FormState = {
   all_day: boolean
   attendee_ids: string[]
   group_id: string
-  assignee_ids: string[]
 }
 
 const emptyForm = (): FormState => ({
   title: '', description: '', location: '',
   start_at: '', end_at: '', all_day: false, attendee_ids: [],
-  group_id: '', assignee_ids: [],
+  group_id: '',
 })
 
 function dateToLocalDatetime(d: Date): string {
@@ -167,36 +165,6 @@ function getMultiDaySegments(week: (Date | null)[], events: Event[]): MultiDaySe
   })
 }
 
-// 表示用: 担当者名をカンマ区切りで返す（4名以上は省略）
-function formatAssigneeNames(
-  assignees: EventAssignee[] | undefined,
-  members: Pick<Profile, 'id' | 'display_name'>[],
-  currentUserId: string
-): string {
-  if (!assignees || assignees.length === 0) return ''
-  const names = assignees.map(a => {
-    const name = members.find(m => m.id === a.user_id)?.display_name ?? '名前未設定'
-    return a.user_id === currentUserId ? `${name}（自分）` : name
-  })
-  if (names.length <= 3) return names.join(', ')
-  return `${names.slice(0, 2).join(', ')} 他${names.length - 2}名`
-}
-
-// 互換: event_assignees が空なら legacy assigned_to フィールドから生成
-function getEffectiveAssignees(event: Event): EventAssignee[] {
-  if (event.assignees && event.assignees.length > 0) return event.assignees
-  if (event.assigned_to && event.approval_status && event.approval_status !== 'none') {
-    return [{
-      id: '',
-      event_id: event.id,
-      user_id: event.assigned_to,
-      approval_status: event.approval_status as 'pending' | 'accepted' | 'rejected',
-      approval_updated_at: event.approval_updated_at,
-    }]
-  }
-  return []
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function CalendarView({
   initialEvents,
@@ -252,10 +220,20 @@ export default function CalendarView({
     return days
   }, [currentMonth])
 
+  // ── 不参加の予定を非表示 ─────────────────────────────────────────────────
+  const visibleEvents = useMemo(
+    () => events.filter(e => {
+      if (e.created_by === currentUserId) return true
+      const myAttendee = e.attendees?.find(a => a.user_id === currentUserId)
+      return !myAttendee || myAttendee.status !== 'declined'
+    }),
+    [events, currentUserId]
+  )
+
   // ── 日付→イベントマップ（複数日イベントは全日にマップ）─────────────────
   const eventsByDay = useMemo(() => {
     const map = new Map<string, Event[]>()
-    events.forEach(e => {
+    visibleEvents.forEach(e => {
       const startKey = format(parseISO(e.start_at), 'yyyy-MM-dd')
       const endKey   = format(parseISO(e.end_at),   'yyyy-MM-dd')
       if (startKey === endKey) {
@@ -292,7 +270,7 @@ export default function CalendarView({
   // ── グリッドセル用: 単日イベントのみ ─────────────────────────────────────
   const singleDayEventsByDay = useMemo(() => {
     const map = new Map<string, Event[]>()
-    events.forEach(e => {
+    visibleEvents.forEach(e => {
       const s   = format(parseISO(e.start_at), 'yyyy-MM-dd')
       const end = format(parseISO(e.end_at),   'yyyy-MM-dd')
       if (s === end) {
@@ -350,7 +328,6 @@ export default function CalendarView({
       all_day: (event as any).all_day ?? false,
       attendee_ids: event.attendees?.map(a => a.user_id) ?? [],
       group_id: event.group_id ?? '',
-      assignee_ids: getEffectiveAssignees(event).map(a => a.user_id),
     })
     setDetailEvent(null)
     setOpen(true)
@@ -363,15 +340,6 @@ export default function CalendarView({
       attendee_ids: p.attendee_ids.includes(v)
         ? p.attendee_ids.filter(i => i !== v)
         : [...p.attendee_ids, v],
-    }))
-  }
-
-  function toggleAssignee(userId: string) {
-    setForm(p => ({
-      ...p,
-      assignee_ids: p.assignee_ids.includes(userId)
-        ? p.assignee_ids.filter(id => id !== userId)
-        : [...p.assignee_ids, userId],
     }))
   }
 
@@ -395,7 +363,6 @@ export default function CalendarView({
       end_at: toSupabaseDatetime(form.end_at, form.all_day, true),
       all_day: form.all_day,
       group_id: form.group_id || null,
-      assignee_ids: form.assignee_ids,
       attendee_ids: form.attendee_ids,
     }
 
@@ -418,22 +385,6 @@ export default function CalendarView({
     setForm(emptyForm())
   }
 
-  async function updateEventApproval(eventId: string, status: 'accepted' | 'rejected') {
-    const result = await respondToEventApproval(eventId, status)
-    if (result.error) { toast.error('更新に失敗しました'); return }
-
-    const applyUpdate = (e: Event): Event => e.id !== eventId ? e : {
-      ...e,
-      assignees: e.assignees?.map(a =>
-        a.user_id === currentUserId ? { ...a, approval_status: status } : a
-      ),
-      ...(e.assigned_to === currentUserId ? { approval_status: status } : {}),
-    }
-    setEvents(prev => prev.map(applyUpdate))
-    setDetailEvent(prev => prev ? applyUpdate(prev) : null)
-    toast.success(status === 'accepted' ? '承認しました' : '拒否しました')
-  }
-
   async function deleteEvent() {
     if (!deleteTarget) return
     const { error } = await supabase.from('events').delete().eq('id', deleteTarget.id)
@@ -449,11 +400,8 @@ export default function CalendarView({
     attendeeId: string,
     status: 'accepted' | 'declined'
   ) {
-    const { error } = await supabase
-      .from('event_attendees')
-      .update({ status, responded_at: new Date().toISOString() })
-      .eq('id', attendeeId)
-    if (error) { toast.error('回答に失敗しました'); return }
+    const result = await respondToEventAttendance(eventId, attendeeId, status)
+    if (result.error) { toast.error('回答に失敗しました'); return }
     const applyUpdate = (e: Event) =>
       e.id !== eventId ? e : {
         ...e,
@@ -555,7 +503,7 @@ export default function CalendarView({
         </div>
 
         {calendarWeeks.map((week, wi) => {
-          const segments = getMultiDaySegments(week, events)
+          const segments = getMultiDaySegments(week, visibleEvents)
           const maxSlot = segments.reduce((m, s) => Math.max(m, s.slot + 1), 0)
           const clampedSlots = Math.min(maxSlot, MAX_BAR_SLOTS)
           const barAreaHeight = BAR_TOP_OFFSET + clampedSlots * BAR_ROW_HEIGHT
@@ -621,16 +569,19 @@ export default function CalendarView({
                     </div>
 
                     <div className="space-y-0.5 px-1 pb-1">
-                      {visibleEvents.map(event => (
-                        <div
-                          key={event.id}
-                          title={event.title}
-                          className={`text-[10px] sm:text-[11px] leading-[15px] px-1.5 py-[1px] rounded truncate font-medium cursor-pointer ${getColorClass(event.created_by)}`}
-                          onClick={e => { e.stopPropagation(); setDetailEvent(event) }}
-                        >
-                          {(event as any).all_day ? '終 ' : ''}{event.title}
-                        </div>
-                      ))}
+                      {visibleEvents.map(event => {
+                        const isPendingAttendee = event.attendees?.some(a => a.user_id === currentUserId && a.status === 'pending')
+                        return (
+                          <div
+                            key={event.id}
+                            title={event.title}
+                            className={`text-[10px] sm:text-[11px] leading-[15px] px-1.5 py-[1px] rounded truncate font-medium cursor-pointer ${getColorClass(event.created_by)} ${isPendingAttendee ? 'opacity-60 ring-1 ring-white/40' : ''}`}
+                            onClick={e => { e.stopPropagation(); setDetailEvent(event) }}
+                          >
+                            {isPendingAttendee ? '? ' : (event as any).all_day ? '終 ' : ''}{event.title}
+                          </div>
+                        )
+                      })}
                       {visibleTasks.map(task => (
                         <div
                           key={task.id}
@@ -714,9 +665,6 @@ export default function CalendarView({
           {selectedDayEvents.map(event => {
             const myAttendee = event.attendees?.find(a => a.user_id === currentUserId)
             const isOwner = event.created_by === currentUserId
-            const effectiveAssignees = getEffectiveAssignees(event)
-            const myAssignee = effectiveAssignees.find(a => a.user_id === currentUserId)
-            const assigneeStr = formatAssigneeNames(effectiveAssignees, members, currentUserId)
 
             return (
               <div
@@ -742,15 +690,9 @@ export default function CalendarView({
                           <MapPin size={9} /> {event.location}
                         </p>
                       )}
-                      {assigneeStr && (
-                        <p className="text-xs mt-0.5" style={{ color: '#888' }}>👤 {assigneeStr}</p>
-                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {myAssignee && (
-                      <ApprovalStatusBadge status={myAssignee.approval_status} />
-                    )}
                     {myAttendee && (
                       <Badge variant={statusColor[myAttendee.status as keyof typeof statusColor]} className="text-xs">
                         {statusLabel[myAttendee.status as keyof typeof statusLabel]}
@@ -776,22 +718,6 @@ export default function CalendarView({
                     )}
                   </div>
                 </div>
-                {myAssignee && myAssignee.approval_status === 'pending' && (
-                  <div className="flex gap-2 mt-2.5">
-                    <Button
-                      size="sm" className="flex-1 h-8 text-xs"
-                      onClick={e => { e.stopPropagation(); updateEventApproval(event.id, 'accepted') }}
-                    >
-                      受ける
-                    </Button>
-                    <Button
-                      size="sm" variant="outline" className="flex-1 h-8 text-xs"
-                      onClick={e => { e.stopPropagation(); updateEventApproval(event.id, 'rejected') }}
-                    >
-                      受けない
-                    </Button>
-                  </div>
-                )}
                 {myAttendee && myAttendee.status === 'pending' && (
                   <div className="flex gap-2 mt-2.5">
                     <Button
@@ -942,7 +868,7 @@ export default function CalendarView({
                 <Label>グループ（任意）</Label>
                 <Select
                   value={form.group_id}
-                  onValueChange={v => setForm(p => ({ ...p, group_id: v === '__none__' ? '' : (v ?? ''), assignee_ids: [] }))}
+                  onValueChange={v => setForm(p => ({ ...p, group_id: v === '__none__' ? '' : (v ?? '') }))}
                   items={[
                     { value: '__none__', label: '個人の予定' },
                     ...groups.map(g => ({ value: g.id, label: g.name })),
@@ -956,56 +882,15 @@ export default function CalendarView({
                     ))}
                   </SelectContent>
                 </Select>
+                {form.group_id && (
+                  <p className="text-xs" style={{ color: '#888' }}>グループメンバー全員に通知が届きます</p>
+                )}
               </div>
             )}
 
-            {/* 担当者（グループ選択時のみ・複数選択可） */}
-            {form.group_id && (() => {
-              const groupMembers = groups.find(g => g.id === form.group_id)?.members ?? []
-              return groupMembers.length > 0 ? (
-                <div className="space-y-1.5">
-                  <Label>担当者（複数選択可）</Label>
-                  <div className="rounded-lg p-1.5 space-y-0.5" style={{ background: '#2a2a2a', border: '1px solid #333' }}>
-                    {groupMembers.map(m => {
-                      const name =
-                        m.profile?.display_name
-                        ?? members.find(p => p.id === m.user_id)?.display_name
-                        ?? '名前未設定'
-                      const checked = form.assignee_ids.includes(m.user_id)
-                      const isOther = m.user_id !== currentUserId
-                      return (
-                        <label
-                          key={m.user_id}
-                          className="flex items-center gap-2.5 cursor-pointer px-2.5 py-2 rounded transition-colors hover:bg-[#333]"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleAssignee(m.user_id)}
-                            className="rounded"
-                          />
-                          <span className="text-sm flex-1" style={{ color: '#f0f0f0' }}>
-                            {name}{m.user_id === currentUserId ? ' （自分）' : ''}
-                          </span>
-                          {checked && isOther && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(212,160,85,0.15)', color: '#d4a055' }}>
-                              承認依頼
-                            </span>
-                          )}
-                        </label>
-                      )
-                    })}
-                  </div>
-                  {form.assignee_ids.some(id => id !== currentUserId) && (
-                    <p className="text-xs" style={{ color: '#d4a055' }}>担当者に承認依頼が送られます</p>
-                  )}
-                </div>
-              ) : null
-            })()}
-
             {!editingId && (
               <div className="space-y-1.5">
-                <Label>参加依頼メンバー</Label>
+                <Label>参加依頼メンバー（任意）</Label>
                 <Select
                   onValueChange={toggleAttendee}
                   items={members
@@ -1027,15 +912,18 @@ export default function CalendarView({
                   </SelectContent>
                 </Select>
                 {form.attendee_ids.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {form.attendee_ids.map(id => {
-                      const m = members.find(x => x.id === id)
-                      return (
-                        <Badge key={id} variant="secondary" className="text-xs">
-                          {m?.display_name}
-                        </Badge>
-                      )
-                    })}
+                  <div className="space-y-1 mt-1">
+                    <div className="flex flex-wrap gap-1">
+                      {form.attendee_ids.map(id => {
+                        const m = members.find(x => x.id === id)
+                        return (
+                          <Badge key={id} variant="secondary" className="text-xs">
+                            {m?.display_name}
+                          </Badge>
+                        )
+                      })}
+                    </div>
+                    <p className="text-xs" style={{ color: '#888' }}>選択したメンバーに参加依頼の通知が届きます</p>
                   </div>
                 )}
               </div>
@@ -1088,49 +976,8 @@ export default function CalendarView({
             </div>
           </DialogHeader>
           {detailEvent && (() => {
-            const effectiveAssignees = getEffectiveAssignees(detailEvent)
-            const myAssignee = effectiveAssignees.find(a => a.user_id === currentUserId)
             return (
               <div className="space-y-3 mt-2">
-                {/* 担当者一覧と各自の承認ステータス */}
-                {effectiveAssignees.length > 0 && (
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: '#555' }}>
-                      担当者
-                    </p>
-                    <div className="space-y-1.5">
-                      {effectiveAssignees.map(a => (
-                        <div key={a.user_id} className="flex items-center justify-between text-sm">
-                          <span style={{ color: '#f0f0f0' }}>
-                            {members.find(m => m.id === a.user_id)?.display_name ?? '不明'}
-                            {a.user_id === currentUserId ? ' （自分）' : ''}
-                          </span>
-                          <ApprovalStatusBadge status={a.approval_status} />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 自分が担当で pending なら承認アクション */}
-                {myAssignee && myAssignee.approval_status === 'pending' && (
-                  <div className="rounded-xl p-3.5 space-y-3" style={{ background: 'rgba(212,160,85,0.08)', border: '1px solid rgba(212,160,85,0.2)' }}>
-                    <p className="text-sm font-medium" style={{ color: '#d4a055' }}>この予定が担当に割り当てられました</p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => updateEventApproval(detailEvent.id, 'accepted')}
-                        className="flex-1 py-2 rounded-lg text-sm font-semibold uppercase transition-opacity hover:opacity-80"
-                        style={{ background: '#b87333', color: '#1a1a1a', letterSpacing: '0.05em' }}
-                      >受ける</button>
-                      <button
-                        onClick={() => updateEventApproval(detailEvent.id, 'rejected')}
-                        className="flex-1 py-2 rounded-lg text-sm font-semibold uppercase transition-opacity hover:opacity-80"
-                        style={{ border: '1px solid #c66', color: '#c66', background: 'transparent' }}
-                      >受けない</button>
-                    </div>
-                  </div>
-                )}
-
                 <p className="text-sm flex items-center gap-1.5" style={{ color: '#888' }}>
                   <Clock size={14} />
                   {(detailEvent as any).all_day
@@ -1205,25 +1052,10 @@ export default function CalendarView({
                   優先度: {taskPriorityLabel[detailTask.priority as keyof typeof taskPriorityLabel]}
                 </span>
               </div>
-              {detailTask.assignee_id && (
-                <p className="text-sm" style={{ color: '#b8b8b8' }}>
-                  👤 担当: {members.find(m => m.id === detailTask.assignee_id)?.display_name ?? '不明'}
-                </p>
-              )}
               {detailTask.assignees && detailTask.assignees.length > 0 && (
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: '#555' }}>承認担当</p>
-                  <div className="space-y-1.5">
-                    {detailTask.assignees.map(a => (
-                      <div key={a.user_id} className="flex items-center justify-between text-sm">
-                        <span style={{ color: '#f0f0f0' }}>
-                          {members.find(m => m.id === a.user_id)?.display_name ?? '不明'}
-                        </span>
-                        <ApprovalStatusBadge status={a.approval_status} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <p className="text-sm" style={{ color: '#b8b8b8' }}>
+                  👤 担当: {detailTask.assignees.map(a => members.find(m => m.id === a.user_id)?.display_name ?? '不明').join(', ')}
+                </p>
               )}
               {detailTask.due_date && (
                 <p className={`text-sm flex items-center gap-1.5 ${taskDueDateColor(detailTask) || ''}`} style={{ color: '#888' }}>

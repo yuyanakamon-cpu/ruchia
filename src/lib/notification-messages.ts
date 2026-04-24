@@ -31,4 +31,13 @@ export const notificationMessages = {
 
   groupNewEvent: (groupName: string, title: string, creatorName: string, startAt: string) =>
     `📅 「${groupName}」に新しい予定が追加されました\n${title}\n日時: ${formatJaDate(startAt)}\n(作成者: ${creatorName})`,
+
+  attendeeInvite: (title: string, creatorName: string, startAt: string) =>
+    `📨 「${title}」への参加依頼が届きました\n日時: ${formatJaDate(startAt)}\n(作成者: ${creatorName})\n\nRuchiaで参加・不参加を回答できます`,
+
+  attendeeAccepted: (title: string, responderName: string) =>
+    `✅ ${responderName}さんが「${title}」に参加します`,
+
+  attendeeDeclined: (title: string, responderName: string) =>
+    `❌ ${responderName}さんが「${title}」への参加を断りました`,
 }

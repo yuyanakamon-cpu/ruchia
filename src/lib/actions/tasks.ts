@@ -47,7 +47,7 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
       priority: input.priority,
       status: 'todo',
       created_by: user.id,
-      approval_status: otherAssignees.length > 0 ? 'pending' : 'none',
+      approval_status: 'none',
     })
     .select('*')
     .single()
@@ -58,7 +58,7 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
       input.assignee_ids.map(uid => ({
         task_id: task.id,
         user_id: uid,
-        approval_status: uid === user.id ? 'accepted' : 'pending',
+        approval_status: 'accepted',
       }))
     )
   }
@@ -67,7 +67,7 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
     id: '',
     task_id: task.id,
     user_id: uid,
-    approval_status: (uid === user.id ? 'accepted' : 'pending') as TaskAssignee['approval_status'],
+    approval_status: 'accepted' as TaskAssignee['approval_status'],
     approval_updated_at: null,
   }))
 
@@ -128,7 +128,7 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
       group_id: input.group_id,
       due_date: input.due_date,
       priority: input.priority,
-      approval_status: otherAssignees.length > 0 ? 'pending' : 'none',
+      approval_status: 'none',
     })
     .eq('id', taskId)
     .select('*')
@@ -141,7 +141,7 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
       input.assignee_ids.map(uid => ({
         task_id: taskId,
         user_id: uid,
-        approval_status: uid === user.id ? 'accepted' : 'pending',
+        approval_status: 'accepted',
       }))
     )
   }
@@ -150,7 +150,7 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
     id: '',
     task_id: taskId,
     user_id: uid,
-    approval_status: (uid === user.id ? 'accepted' : 'pending') as TaskAssignee['approval_status'],
+    approval_status: 'accepted' as TaskAssignee['approval_status'],
     approval_updated_at: null,
   }))
 
