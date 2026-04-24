@@ -15,10 +15,13 @@ export async function createGroup(name: string, description?: string): Promise<G
     .single()
   if (error) throw error
 
-  // トリガーに依存せず明示的に追加（本番でトリガーが遅延・失敗するケースを防ぐ）
+  // トリガーが先に走っている場合は重複を無視する
   await supabase
     .from('group_members')
-    .upsert({ group_id: group.id, user_id: user.id, role: 'admin' }, { onConflict: 'group_id,user_id' })
+    .upsert(
+      { group_id: group.id, user_id: user.id, role: 'admin' },
+      { onConflict: 'group_id,user_id', ignoreDuplicates: true },
+    )
 
   return group
 }
