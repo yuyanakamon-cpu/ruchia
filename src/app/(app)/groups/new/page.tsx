@@ -66,7 +66,6 @@ export default function NewGroupPage() {
 
       toast.success('グループを作成しました')
       router.push(`/groups/${group.id}`)
-      router.refresh()
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'グループ作成に失敗しました')
       setSaving(false)

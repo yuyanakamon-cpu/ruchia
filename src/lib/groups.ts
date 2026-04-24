@@ -56,7 +56,15 @@ export async function getGroupByIdAdmin(id: string): Promise<(Group & { members:
     .select('*, members:group_members(id, group_id, user_id, role, joined_at, profile:profiles(id, display_name))')
     .eq('id', id)
     .single()
-  if (error) return null
+  if (error) {
+    console.error('[getGroupByIdAdmin] Supabase error:', {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    })
+    return null
+  }
   return data as Group & { members: GroupMember[] }
 }
 
