@@ -998,35 +998,45 @@ export default function CalendarView({
                 {detailEvent.attendees && detailEvent.attendees.length > 0 && (
                   <div>
                     <p className="text-[11px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5" style={{ color: '#555' }}>
-                      <Users size={12} /> 参加者
+                      <Users size={12} /> 参加依頼メンバー
                     </p>
-                    <div className="space-y-1.5">
-                      {detailEvent.attendees.map(a => (
-                        <div key={a.id} className="flex items-center justify-between text-sm">
-                          <span style={{ color: '#f0f0f0' }}>
-                            {members.find(m => m.id === a.user_id)?.display_name ?? '不明'}
-                          </span>
-                          <Badge variant={statusColor[a.status as keyof typeof statusColor]} className="text-xs">
-                            {statusLabel[a.status as keyof typeof statusLabel]}
-                          </Badge>
-                        </div>
-                      ))}
+                    <div className="space-y-2">
+                      {detailEvent.attendees.map(a => {
+                        const isMe = a.user_id === currentUserId
+                        const emoji = a.status === 'accepted' ? '✅' : a.status === 'declined' ? '❌' : '⏳'
+                        return (
+                          <div key={a.id} className="flex items-center justify-between gap-2 text-sm">
+                            <span className="flex items-center gap-1.5" style={{ color: '#f0f0f0' }}>
+                              <span>{emoji}</span>
+                              {members.find(m => m.id === a.user_id)?.display_name ?? '不明'}
+                              {isMe && <span className="text-[10px]" style={{ color: '#555' }}>(自分)</span>}
+                            </span>
+                            {isMe && (
+                              <div className="flex gap-1 shrink-0">
+                                <button
+                                  disabled={a.status === 'accepted'}
+                                  onClick={() => respondToEvent(detailEvent.id, a.id, 'accepted')}
+                                  className="px-2 py-0.5 rounded text-[11px] font-semibold transition-opacity disabled:opacity-30"
+                                  style={{ background: a.status === 'accepted' ? 'rgba(106,176,76,0.3)' : '#b87333', color: '#1a1a1a' }}
+                                >
+                                  参加
+                                </button>
+                                <button
+                                  disabled={a.status === 'declined'}
+                                  onClick={() => respondToEvent(detailEvent.id, a.id, 'declined')}
+                                  className="px-2 py-0.5 rounded text-[11px] font-semibold transition-opacity disabled:opacity-30"
+                                  style={{ border: '1px solid #444', color: a.status === 'declined' ? '#cc6666' : '#888', background: 'transparent' }}
+                                >
+                                  不参加
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
-                {(() => {
-                  const myAttendee = detailEvent.attendees?.find(a => a.user_id === currentUserId)
-                  return myAttendee && myAttendee.status === 'pending' ? (
-                    <div className="flex gap-2 pt-2">
-                      <Button size="sm" className="flex-1" onClick={() => respondToEvent(detailEvent.id, myAttendee.id, 'accepted')}>
-                        参加する
-                      </Button>
-                      <Button size="sm" variant="outline" className="flex-1" onClick={() => respondToEvent(detailEvent.id, myAttendee.id, 'declined')}>
-                        不参加
-                      </Button>
-                    </div>
-                  ) : null
-                })()}
               </div>
             )
           })()}

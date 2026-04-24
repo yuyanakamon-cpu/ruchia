@@ -131,7 +131,7 @@ export async function respondToEventAttendance(
 
   const { error } = await supabase
     .from('event_attendees')
-    .update({ status, responded_at: new Date().toISOString() })
+    .update({ status })
     .eq('id', attendeeId)
   if (error) return { error: error.message }
 
