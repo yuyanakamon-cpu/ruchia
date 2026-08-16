@@ -1,9 +1,26 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { notifyUser, notifyUsers } from '@/lib/telegram'
+import { notifyUser } from '@/lib/telegram'
+import { notifyTaskAssignedToGroup } from '@/lib/line-task-notify'
 import { notificationMessages } from '@/lib/notification-messages'
 import type { Task, TaskAssignee } from '@/types'
+
+// 担当者ID配列 → 表示名＋LINE userId（telegram_chat_idに保存）に変換
+async function buildAssigneeProfiles(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  assigneeIds: string[],
+): Promise<{ display_name: string; lineUserId: string | null }[]> {
+  if (assigneeIds.length === 0) return []
+  const { data } = await supabase
+    .from('profiles')
+    .select('id, display_name, telegram_chat_id')
+    .in('id', assigneeIds)
+  return assigneeIds.map((id) => {
+    const p = (data ?? []).find((x) => x.id === id)
+    return { display_name: p?.display_name ?? '担当者', lineUserId: p?.telegram_chat_id ?? null }
+  })
+}
 
 type TaskInput = {
   title: string
@@ -71,30 +88,12 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
     approval_updated_at: null,
   }))
 
-  // Assignees (not self) → task_assigned（グループへ1回）
-  if (otherAssignees.length > 0) {
-    const creatorName = await getDisplayName(supabase, user.id)
-    await notifyUsers(otherAssignees, notificationMessages.taskAssigned(task.title, creatorName), 'task_assigned')
-  }
-
-  // Other group members (not self, not assignees) → group_update
-  if (input.group_id) {
-    const [{ data: members }, { data: group }] = await Promise.all([
-      supabase.from('group_members').select('user_id').eq('group_id', input.group_id),
-      supabase.from('groups').select('name').eq('id', input.group_id).single(),
-    ])
-    const creatorName = await getDisplayName(supabase, user.id)
-    const groupOnlyIds = (members ?? [])
-      .map((m: { user_id: string }) => m.user_id)
-      .filter((id: string) => id !== user.id && !otherAssignees.includes(id))
-
-    if (groupOnlyIds.length > 0) {
-      await notifyUsers(
-        groupOnlyIds,
-        notificationMessages.groupNewTask(group?.name ?? '', task.title, creatorName),
-        'group_update',
-      )
-    }
+  // 割り当て通知（LINEグループへ1回・担当者を@メンション＋タイトル/詳細/優先度/担当者/期限/リンク）
+  if (input.assignee_ids.length > 0 || input.group_id) {
+    await notifyTaskAssignedToGroup(
+      { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
+      await buildAssigneeProfiles(supabase, input.assignee_ids),
+    )
   }
 
   return { task: { ...task, assignees } }
@@ -152,10 +151,12 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
     approval_updated_at: null,
   }))
 
-  // Only notify newly added assignees（グループへ1回）
+  // 新規追加された担当者に通知（グループへ@メンション＋詳細＋リンク）
   if (newAssigneeIds.length > 0) {
-    const creatorName = await getDisplayName(supabase, user.id)
-    await notifyUsers(newAssigneeIds, notificationMessages.taskAssigned(task.title, creatorName), 'task_assigned')
+    await notifyTaskAssignedToGroup(
+      { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
+      await buildAssigneeProfiles(supabase, newAssigneeIds),
+    )
   }
 
   return { task: { ...task, assignees } }
