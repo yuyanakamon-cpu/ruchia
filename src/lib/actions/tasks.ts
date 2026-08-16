@@ -71,12 +71,10 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
     approval_updated_at: null,
   }))
 
-  // Assignees (not self) → task_assigned
+  // Assignees (not self) → task_assigned（グループへ1回）
   if (otherAssignees.length > 0) {
     const creatorName = await getDisplayName(supabase, user.id)
-    for (const uid of otherAssignees) {
-      await notifyUser(uid, notificationMessages.taskAssigned(task.title, creatorName), 'task_assigned')
-    }
+    await notifyUsers(otherAssignees, notificationMessages.taskAssigned(task.title, creatorName), 'task_assigned')
   }
 
   // Other group members (not self, not assignees) → group_update
@@ -154,12 +152,10 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
     approval_updated_at: null,
   }))
 
-  // Only notify newly added assignees
+  // Only notify newly added assignees（グループへ1回）
   if (newAssigneeIds.length > 0) {
     const creatorName = await getDisplayName(supabase, user.id)
-    for (const uid of newAssigneeIds) {
-      await notifyUser(uid, notificationMessages.taskAssigned(task.title, creatorName), 'task_assigned')
-    }
+    await notifyUsers(newAssigneeIds, notificationMessages.taskAssigned(task.title, creatorName), 'task_assigned')
   }
 
   return { task: { ...task, assignees } }

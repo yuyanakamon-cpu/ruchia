@@ -83,13 +83,11 @@ export async function createEvent(input: EventInput): Promise<EventResult> {
   // 参加依頼メンバー（自分以外）に通知
   const otherAttendees = input.attendee_ids.filter(id => id !== user.id)
   if (otherAttendees.length > 0) {
-    for (const uid of otherAttendees) {
-      await notifyUser(
-        uid,
-        notificationMessages.attendeeInvite(event.title, creatorName, event.start_at),
-        'event_assigned',
-      )
-    }
+    await notifyUsers(
+      otherAttendees,
+      notificationMessages.attendeeInvite(event.title, creatorName, event.start_at),
+      'event_assigned',
+    )
   }
 
   return { event: { ...event, attendees: [], assignees: [] } }

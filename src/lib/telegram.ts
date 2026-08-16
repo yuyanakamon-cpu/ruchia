@@ -1,74 +1,38 @@
-import { createClient } from '@/lib/supabase/server'
+// Notifications migrated from Telegram to a LINE group.
+// The exported names are kept so existing call sites don't need to change;
+// every message is delivered once to the configured LINE group.
+// See src/lib/line.ts for the transport.
+import { pushLineGroup, type NotificationType, type SendResult } from '@/lib/line'
 
-export type NotificationType =
-  | 'task_assigned'
-  | 'event_assigned'
-  | 'group_update'
-  | 'approval_response'
-  | 'event_reminder'
-  | 'task_reminder'
+export type { NotificationType, SendResult }
 
-interface SendResult {
-  ok: boolean
-  error?: string
-}
-
-export async function sendTelegramMessage(
-  chatId: string,
-  text: string,
-): Promise<SendResult> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return { ok: false, error: 'TELEGRAM_BOT_TOKEN not set' }
-
-  try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
-        signal: AbortSignal.timeout(10_000),
-      },
-    )
-    const json = (await res.json()) as { ok: boolean; description?: string }
-    return json.ok ? { ok: true } : { ok: false, error: json.description }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
-  }
-}
-
+/** Delivered to the LINE group. userId/type are ignored (group is shared). */
 export async function notifyUser(
-  userId: string,
+  _userId: string,
   text: string,
-  type: NotificationType,
+  _type: NotificationType,
 ): Promise<SendResult> {
-  const supabase = await createClient()
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('telegram_chat_id, notification_preferences')
-    .eq('id', userId)
-    .single()
-
-  if (!profile?.telegram_chat_id) return { ok: false, error: 'no chat_id' }
-
-  const prefs = (profile.notification_preferences ?? {}) as Record<string, boolean>
-  if (prefs[type] === false) return { ok: false, error: 'disabled by user' }
-
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[Notification] type=${type} to=${userId} msg="${text.slice(0, 40)}..."`)
-  }
-
-  return sendTelegramMessage(profile.telegram_chat_id, text)
+  return pushLineGroup(text)
 }
 
+/** One message to the LINE group for the whole recipient set. */
 export async function notifyUsers(
-  userIds: string[],
+  _userIds: string[],
   text: string,
-  type: NotificationType,
-  options?: { excludeUserIds?: string[] },
+  _type: NotificationType,
+  _options?: { excludeUserIds?: string[] },
 ): Promise<void> {
-  const ids = options?.excludeUserIds
-    ? userIds.filter(id => !options.excludeUserIds!.includes(id))
-    : userIds
-  await Promise.allSettled(ids.map(id => notifyUser(id, text, type)))
+  await pushLineGroup(text)
+}
+
+/**
+ * Back-compat wrapper for direct callers (cron reminders / test route).
+ * The first argument (previously a Telegram chat id) is ignored — the
+ * message goes to the LINE group.
+ */
+export async function sendTelegramMessage(
+  _target: string,
+  text: string,
+): Promise<SendResult> {
+  return pushLineGroup(text)
 }

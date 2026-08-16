@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { sendTelegramMessage } from '@/lib/telegram'
+import { pushLineGroup } from '@/lib/line'
 
 // Vercel Cron または pg_cron (pg_net) から呼び出される
 // 認証: Authorization: Bearer $CRON_SECRET
+// 通知は LINE グループへ「対象ごとに1回だけ」送る（メンバー人数によらず重複なし）。
 
 type AdminClient = ReturnType<typeof createAdminClient>
 
 type ReminderStats = {
   sent: number
   already_sent: number
-  pref_off: number
-  no_chat_id: number
+  no_recipients: number
   errors: number
   last_error?: string
 }
@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
 
   const admin = createAdminClient()
   const now = new Date()
-  const stats: ReminderStats = { sent: 0, already_sent: 0, pref_off: 0, no_chat_id: 0, errors: 0 }
+  const stats: ReminderStats = { sent: 0, already_sent: 0, no_recipients: 0, errors: 0 }
 
   try {
     await processEventReminders(admin, now, stats)
@@ -54,12 +54,9 @@ async function processEventReminders(admin: AdminClient, now: Date, stats: Remin
     .lte('start_at', new Date(oneDayFrom.getTime() + 5 * 60 * 1000).toISOString())
 
   for (const event of events1d ?? []) {
-    const userIds = collectEventUserIds(event)
-    const profileMap = await fetchProfileMap(admin, userIds)
+    const marker = markerUserId(collectEventUserIds(event))
     const msg = `🗓️ 明日の予定: ${event.title}\n開始: ${formatJaDatetime(event.start_at)}`
-    for (const uid of userIds) {
-      await sendReminderIfNotSent(admin, uid, event.id, 'event', '1day_before', msg, 'event_reminder', profileMap, stats)
-    }
+    await sendGroupReminderOnce(admin, event.id, 'event', '1day_before', msg, marker, stats)
   }
 
   // ② 1時間前（60分前 ±5分の窓）
@@ -71,12 +68,9 @@ async function processEventReminders(admin: AdminClient, now: Date, stats: Remin
     .lte('start_at', new Date(oneHourFrom.getTime() + 5 * 60 * 1000).toISOString())
 
   for (const event of events1h ?? []) {
-    const userIds = collectEventUserIds(event)
-    const profileMap = await fetchProfileMap(admin, userIds)
+    const marker = markerUserId(collectEventUserIds(event))
     const msg = `⏰ 1時間後に予定があります\n${event.title}`
-    for (const uid of userIds) {
-      await sendReminderIfNotSent(admin, uid, event.id, 'event', '1hour_before', msg, 'event_reminder', profileMap, stats)
-    }
+    await sendGroupReminderOnce(admin, event.id, 'event', '1hour_before', msg, marker, stats)
   }
 }
 
@@ -97,12 +91,9 @@ async function processTaskReminders(admin: AdminClient, now: Date, stats: Remind
     .neq('status', 'done')
 
   for (const task of tasks1h ?? []) {
-    const userIds = collectTaskUserIds(task)
-    const profileMap = await fetchProfileMap(admin, userIds)
+    const marker = markerUserId(collectTaskUserIds(task))
     const msg = `⏰ 1時間後期限: ${task.title}`
-    for (const uid of userIds) {
-      await sendReminderIfNotSent(admin, uid, task.id, 'task', '1hour_before_task', msg, 'task_reminder', profileMap, stats)
-    }
+    await sendGroupReminderOnce(admin, task.id, 'task', '1hour_before_task', msg, marker, stats)
   }
 
   // ② 朝9時リマインダー（JST 09:00〜09:04 のみ）
@@ -137,50 +128,36 @@ async function processTaskReminders(admin: AdminClient, now: Date, stats: Remind
       .neq('status', 'done')
 
     for (const task of tasks ?? []) {
-      const userIds = collectTaskUserIds(task)
-      const profileMap = await fetchProfileMap(admin, userIds)
+      const marker = markerUserId(collectTaskUserIds(task))
       const msg = `${icon} ${label}: ${task.title}`
-      for (const uid of userIds) {
-        await sendReminderIfNotSent(admin, uid, task.id, 'task', reminderType, msg, 'task_reminder', profileMap, stats)
-      }
+      await sendGroupReminderOnce(admin, task.id, 'task', reminderType, msg, marker, stats)
     }
   }
 }
 
 // ─────────────────────────────────────────────
-// 重複防止つき通知送信
+// 重複防止つきグループ通知（対象ごとに1回）
 // ─────────────────────────────────────────────
 
-type ProfileMap = Map<string, { telegram_chat_id: string; notification_preferences: Record<string, boolean> | null }>
-
-async function sendReminderIfNotSent(
+async function sendGroupReminderOnce(
   admin: AdminClient,
-  userId: string,
   targetId: string,
   targetType: 'event' | 'task',
   reminderType: string,
   message: string,
-  notificationType: 'event_reminder' | 'task_reminder',
-  profileMap: ProfileMap,
+  marker: string | null,
   stats: ReminderStats,
 ): Promise<void> {
-  const profile = profileMap.get(userId)
-  if (!profile?.telegram_chat_id) {
-    stats.no_chat_id++
+  // 対象に関係者が誰もいなければスキップ（notifications_sent の user_id 用マーカーが無い）
+  if (!marker) {
+    stats.no_recipients++
     return
   }
 
-  const prefs = profile.notification_preferences ?? {}
-  if (prefs[notificationType] === false) {
-    stats.pref_off++
-    return
-  }
-
-  // 送信済み確認
+  // 送信済み確認（対象単位＝メンバーによらず1回）
   const { data: existing } = await admin
     .from('notifications_sent')
     .select('id')
-    .eq('user_id', userId)
     .eq('target_id', targetId)
     .eq('target_type', targetType)
     .eq('reminder_type', reminderType)
@@ -191,22 +168,18 @@ async function sendReminderIfNotSent(
     return
   }
 
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[Reminder] ${reminderType} → ${userId}: ${message.slice(0, 40)}...`)
-  }
-
-  const result = await sendTelegramMessage(profile.telegram_chat_id, message)
+  const result = await pushLineGroup(message)
 
   if (result.ok) {
     await admin.from('notifications_sent').insert({
-      user_id: userId,
+      user_id: marker,
       target_id: targetId,
       target_type: targetType,
       reminder_type: reminderType,
     })
     stats.sent++
   } else {
-    console.error(`[Reminder] Send failed for ${userId}: ${result.error}`)
+    console.error(`[Reminder] group send failed for ${targetType}:${targetId}: ${result.error}`)
     stats.errors++
     stats.last_error = result.error
   }
@@ -230,23 +203,9 @@ function collectTaskUserIds(task: { created_by: string | null; assignees?: { use
   return [...ids]
 }
 
-async function fetchProfileMap(admin: AdminClient, userIds: string[]): Promise<ProfileMap> {
-  if (userIds.length === 0) return new Map()
-  const { data } = await admin
-    .from('profiles')
-    .select('id, telegram_chat_id, notification_preferences')
-    .in('id', userIds)
-    .not('telegram_chat_id', 'is', null)
-  const map: ProfileMap = new Map()
-  for (const p of data ?? []) {
-    if (p.telegram_chat_id) {
-      map.set(p.id, {
-        telegram_chat_id: p.telegram_chat_id,
-        notification_preferences: p.notification_preferences as Record<string, boolean> | null,
-      })
-    }
-  }
-  return map
+/** notifications_sent の user_id 用マーカー（対象の関係者を1名）。いなければ null。 */
+function markerUserId(userIds: string[]): string | null {
+  return userIds.length > 0 ? userIds[0] : null
 }
 
 function formatJaDatetime(isoString: string): string {

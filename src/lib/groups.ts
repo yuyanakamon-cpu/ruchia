@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import type { Group, GroupMember } from '@/types/group'
-import { notifyUser } from '@/lib/telegram'
+import { notifyUsers } from '@/lib/telegram'
 import { notificationMessages } from '@/lib/notification-messages'
 
 export async function createGroup(name: string, description?: string): Promise<Group> {
@@ -85,9 +85,7 @@ export async function addMembers(groupId: string, userIds: string[]): Promise<vo
     .eq('id', groupId)
     .single()
   if (group?.name) {
-    await Promise.allSettled(
-      userIds.map(uid => notifyUser(uid, notificationMessages.groupInvite(group.name), 'group_update'))
-    )
+    await notifyUsers(userIds, notificationMessages.groupInvite(group.name), 'group_update')
   }
 }
 
