@@ -22,7 +22,9 @@ export default function LoginPage() {
     console.log('KEY:', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.slice(0, 30) + '...')
     console.log('Email:', email)
 
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    // ID（@なし）はチーム用の合成メールに補完。メールアドレス直接入力にも対応。
+    const loginEmail = email.includes('@') ? email.trim() : `${email.trim()}@ruchia.app`
+    const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password })
 
     if (error) {
       console.error('❌ ログインエラー:', {
@@ -52,16 +54,20 @@ export default function LoginPage() {
         </div>
         <form onSubmit={handleLogin} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium mb-1.5" style={{ color: '#b8b8b8' }}>メールアドレス</label>
+            <label className="block text-sm font-medium mb-1.5" style={{ color: '#b8b8b8' }}>ID</label>
             <input
-              type="email"
+              type="text"
+              inputMode="text"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-4 py-3 rounded outline-none transition-colors"
               style={{ background: '#232323', border: '1px solid #3a3a3a', color: '#f0f0f0' }}
               onFocus={e => (e.target.style.borderColor = '#b87333')}
               onBlur={e => (e.target.style.borderColor = '#3a3a3a')}
-              placeholder="name@example.com"
+              placeholder="例: takahashi1001"
               required
             />
           </div>
