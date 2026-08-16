@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { getEventsForView, type EventView } from '@/lib/events'
+import { getTeamMemberProfiles } from '@/lib/team'
 import CalendarView from '@/components/calendar/CalendarView'
 import type { Group, GroupMember } from '@/types/group'
 
@@ -14,9 +15,9 @@ export default async function CalendarPage({
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  const [events, { data: members }, { data: tasks }, { data: groupRows }] = await Promise.all([
+  const [events, members, { data: tasks }, { data: groupRows }] = await Promise.all([
     getEventsForView(view, groupId),
-    supabase.from('profiles').select('id, display_name').order('display_name'),
+    getTeamMemberProfiles(),
     supabase.from('tasks').select('*, assignees:task_assignees(id, user_id, approval_status, approval_updated_at)').not('due_date', 'is', null).order('due_date'),
     supabase
       .from('groups')
@@ -30,7 +31,7 @@ export default async function CalendarPage({
     <CalendarView
       initialEvents={events}
       initialTasks={tasks ?? []}
-      members={members ?? []}
+      members={members}
       currentUserId={user!.id}
       groups={groups}
       currentView={view}
