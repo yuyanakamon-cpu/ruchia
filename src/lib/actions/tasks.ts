@@ -92,16 +92,16 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
     approval_updated_at: null,
   }))
 
-  // 割り当て通知（LINEグループへ1回・担当者を@メンション＋タイトル/詳細/優先度/担当者/期限/リンク）
-  if (input.assignee_ids.length > 0 || input.group_id) {
+  // グループ(Synact)のタスクだけ LINEグループへ通知（個人タスクは流さない）
+  if (input.group_id) {
     await notifyTaskAssignedToGroup(
       { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
       await buildAssigneeProfiles(input.assignee_ids),
     )
   }
-  // 担当者(自分以外)のiPhoneへプッシュ通知
-  if (otherAssignees.length > 0) {
-    await sendPushToUsers(otherAssignees, { title: '新しいタスク', body: task.title, url: '/tasks', tag: `task-${task.id}` })
+  // 担当者(自分含む)のiPhoneへプッシュ通知
+  if (input.assignee_ids.length > 0) {
+    await sendPushToUsers(input.assignee_ids, { title: '新しいタスク', body: task.title, url: '/tasks', tag: `task-${task.id}` })
   }
 
   return { task: { ...task, assignees } }
@@ -159,12 +159,14 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
     approval_updated_at: null,
   }))
 
-  // 新規追加された担当者に通知（グループへ@メンション＋詳細＋リンク）＋iPhoneプッシュ
+  // 新規追加された担当者へ通知（LINEはグループ(Synact)タスクのみ）＋iPhoneプッシュ
   if (newAssigneeIds.length > 0) {
-    await notifyTaskAssignedToGroup(
-      { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
-      await buildAssigneeProfiles(newAssigneeIds),
-    )
+    if (input.group_id) {
+      await notifyTaskAssignedToGroup(
+        { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
+        await buildAssigneeProfiles(newAssigneeIds),
+      )
+    }
     await sendPushToUsers(newAssigneeIds, { title: '新しいタスク', body: task.title, url: '/tasks', tag: `task-${taskId}` })
   }
 
