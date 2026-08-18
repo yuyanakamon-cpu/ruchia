@@ -3,6 +3,7 @@ import { format, isToday, isPast, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import { Calendar, CheckSquare, Clock, MapPin, AlertCircle, ArrowRight } from 'lucide-react'
 import Link from 'next/link'
+import EnableNotifications from '@/components/push/EnableNotifications'
 
 const priorityStyles = {
   high: { background: 'rgba(204,102,102,0.2)', color: '#cc6666', border: '1px solid rgba(204,102,102,0.3)' },
@@ -40,6 +41,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
+      <div className="mb-4"><EnableNotifications /></div>
       <div className="mb-8">
         <p className="text-sm mb-1" style={{ color: '#555' }}>{format(today, 'yyyy年M月d日（E）', { locale: ja })}</p>
         <h1 className="text-3xl" style={{ color: '#f0f0f0' }}>

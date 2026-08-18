@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { notifyUser } from '@/lib/telegram'
 import { notifyTaskAssignedToGroup } from '@/lib/line-task-notify'
+import { sendPushToUsers } from '@/lib/webpush'
 import { notificationMessages } from '@/lib/notification-messages'
 import type { Task, TaskAssignee } from '@/types'
 
@@ -95,6 +96,10 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
       await buildAssigneeProfiles(supabase, input.assignee_ids),
     )
   }
+  // 担当者(自分以外)のiPhoneへプッシュ通知
+  if (otherAssignees.length > 0) {
+    await sendPushToUsers(otherAssignees, { title: '新しいタスク', body: task.title, url: '/tasks', tag: `task-${task.id}` })
+  }
 
   return { task: { ...task, assignees } }
 }
@@ -151,12 +156,13 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
     approval_updated_at: null,
   }))
 
-  // 新規追加された担当者に通知（グループへ@メンション＋詳細＋リンク）
+  // 新規追加された担当者に通知（グループへ@メンション＋詳細＋リンク）＋iPhoneプッシュ
   if (newAssigneeIds.length > 0) {
     await notifyTaskAssignedToGroup(
       { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
       await buildAssigneeProfiles(supabase, newAssigneeIds),
     )
+    await sendPushToUsers(newAssigneeIds, { title: '新しいタスク', body: task.title, url: '/tasks', tag: `task-${taskId}` })
   }
 
   return { task: { ...task, assignees } }

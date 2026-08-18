@@ -8,6 +8,9 @@ const geist = Geist({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "Ruchia",
   description: "社内スケジュール＆タスク管理",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Ruchia" },
+  icons: { apple: "/apple-touch-icon.png" },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
