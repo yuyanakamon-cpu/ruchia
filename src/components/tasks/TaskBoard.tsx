@@ -24,7 +24,7 @@ import { CheckSquare, Plus, Check, Pencil, Trash2 } from 'lucide-react'
 import ViewToggle, { type ViewMode } from '@/components/shared/ViewToggle'
 import type { Task, Profile, TaskAssignee } from '@/types'
 import type { Group, GroupMember } from '@/types/group'
-import { createTask, updateTask } from '@/lib/actions/tasks'
+import { createTask, updateTask, updateTaskStatus } from '@/lib/actions/tasks'
 
 function toLocalDatetimeInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -139,11 +139,11 @@ export default function TaskBoard({
   }
 
   async function updateStatus(taskId: string, status: Task['status']) {
-    const updates: Partial<Task> = { status }
-    if (status === 'done') updates.completed_at = new Date().toISOString()
-    const { error } = await supabase.from('tasks').update(updates).eq('id', taskId)
-    if (error) { toast.error('更新に失敗しました'); return }
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t))
+    // サーバーアクション経由（LINE/プッシュ通知を発火させるため）
+    const completed_at = status === 'done' ? new Date().toISOString() : null
+    const res = await updateTaskStatus(taskId, status)
+    if (res.error) { toast.error('更新に失敗しました'); return }
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status, completed_at } : t))
     if (status === 'done') toast.success('タスクを完了しました！')
   }
 

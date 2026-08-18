@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { notifyUser } from '@/lib/telegram'
 import { notifyTaskAssignedToGroup } from '@/lib/line-task-notify'
+import { pushLineGroup } from '@/lib/line'
 import { sendPushToUsers } from '@/lib/webpush'
 import { notificationMessages } from '@/lib/notification-messages'
 import type { Task, TaskAssignee } from '@/types'
@@ -171,6 +172,46 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
   }
 
   return { task: { ...task, assignees } }
+}
+
+// タスクのステータス変更（開始/完了）＋通知（LINEはグループタスクのみ・プッシュは担当者へ）
+export async function updateTaskStatus(
+  taskId: string,
+  status: 'todo' | 'in_progress' | 'done',
+): Promise<{ error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: '認証が必要です' }
+
+  const updates: { status: string; completed_at: string | null } = {
+    status,
+    completed_at: status === 'done' ? new Date().toISOString() : null,
+  }
+  const { data: task, error } = await supabase
+    .from('tasks')
+    .update(updates)
+    .eq('id', taskId)
+    .select('id, title, group_id')
+    .single()
+  if (error) return { error: error.message }
+
+  // 進行中/完了になった時だけ通知
+  if (status === 'in_progress' || status === 'done') {
+    const who = await getDisplayName(supabase, user.id)
+    const header = status === 'done' ? '✅ タスク完了' : '🔄 タスク開始（進行中）'
+    const actionWord = status === 'done' ? '完了者' : '担当'
+
+    if (task.group_id) {
+      await pushLineGroup(`${header}\n📋 ${task.title}\n👤 ${actionWord}: ${who}\n🔗 https://ruchia.vercel.app/tasks`)
+    }
+    // 担当者(変更者以外)のiPhoneへ
+    const { data: asg } = await supabase.from('task_assignees').select('user_id').eq('task_id', taskId)
+    const targets = (asg ?? []).map((a: { user_id: string }) => a.user_id).filter(id => id !== user.id)
+    if (targets.length > 0) {
+      await sendPushToUsers(targets, { title: header, body: task.title, url: '/tasks', tag: `task-${taskId}-status` })
+    }
+  }
+  return {}
 }
 
 export async function respondToTaskApproval(
