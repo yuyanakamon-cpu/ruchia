@@ -1,19 +1,22 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { notifyUser } from '@/lib/telegram'
 import { notifyTaskAssignedToGroup } from '@/lib/line-task-notify'
 import { sendPushToUsers } from '@/lib/webpush'
 import { notificationMessages } from '@/lib/notification-messages'
 import type { Task, TaskAssignee } from '@/types'
 
-// 担当者ID配列 → 表示名＋LINE userId（telegram_chat_idに保存）に変換
+// 担当者ID配列 → 表示名＋LINE userId（telegram_chat_idに保存）に変換。
+// RLSで他人のtelegram_chat_id(=LINE userId)が読めないと@メンションが不発になるため、
+// 通知内部の解決は admin(service role) で行う。
 async function buildAssigneeProfiles(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   assigneeIds: string[],
 ): Promise<{ display_name: string; lineUserId: string | null }[]> {
   if (assigneeIds.length === 0) return []
-  const { data } = await supabase
+  const admin = createAdminClient()
+  const { data } = await admin
     .from('profiles')
     .select('id, display_name, telegram_chat_id')
     .in('id', assigneeIds)
@@ -93,7 +96,7 @@ export async function createTask(input: TaskInput): Promise<TaskResult> {
   if (input.assignee_ids.length > 0 || input.group_id) {
     await notifyTaskAssignedToGroup(
       { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
-      await buildAssigneeProfiles(supabase, input.assignee_ids),
+      await buildAssigneeProfiles(input.assignee_ids),
     )
   }
   // 担当者(自分以外)のiPhoneへプッシュ通知
@@ -160,7 +163,7 @@ export async function updateTask(taskId: string, input: TaskInput): Promise<Task
   if (newAssigneeIds.length > 0) {
     await notifyTaskAssignedToGroup(
       { title: task.title, description: task.description, priority: task.priority, due_date: task.due_date },
-      await buildAssigneeProfiles(supabase, newAssigneeIds),
+      await buildAssigneeProfiles(newAssigneeIds),
     )
     await sendPushToUsers(newAssigneeIds, { title: '新しいタスク', body: task.title, url: '/tasks', tag: `task-${taskId}` })
   }

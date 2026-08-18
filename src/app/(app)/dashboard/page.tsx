@@ -28,8 +28,8 @@ export default async function DashboardPage() {
 
   const [{ data: todayEvents }, { data: myTasks }, { data: allTasks }, { data: profile }] = await Promise.all([
     supabase.from('events').select('*').gte('start_at', `${todayStr}T00:00:00`).lt('start_at', `${tomorrowStr}T00:00:00`).order('start_at'),
-    supabase.from('tasks').select('*').eq('assignee_id', user!.id).neq('status', 'done').order('due_date', { nullsFirst: false }),
-    supabase.from('tasks').select('status').eq('assignee_id', user!.id),
+    supabase.from('tasks').select('*, task_assignees!inner(user_id)').eq('task_assignees.user_id', user!.id).neq('status', 'done').order('due_date', { nullsFirst: false }),
+    supabase.from('tasks').select('status, task_assignees!inner(user_id)').eq('task_assignees.user_id', user!.id),
     supabase.from('profiles').select('display_name').eq('id', user!.id).single(),
   ])
 
