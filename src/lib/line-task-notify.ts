@@ -43,7 +43,7 @@ export async function notifyTaskAssignedToGroup(
   for (const a of assignees) {
     if (!a.lineUserId) continue
     const token = `@${a.display_name}`
-    mentionees.push({ index: mentionLine.length, length: token.length, userId: a.lineUserId })
+    mentionees.push({ index: mentionLine.length, length: token.length, type: 'user', userId: a.lineUserId })
     mentionLine += token + ' '
   }
   mentionLine = mentionLine.trimEnd()

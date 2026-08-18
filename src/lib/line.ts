@@ -16,9 +16,11 @@ export interface SendResult {
 }
 
 // LINEの@メンション対象。index/lengthはテキストのUTF-16コードユニット位置。
+// 現行APIは type:"user"（特定ユーザー）が必須。
 export interface Mentionee {
   index: number
   length: number
+  type: 'user'
   userId: string
 }
 
